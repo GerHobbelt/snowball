@@ -439,7 +439,7 @@ static void generate_not(struct generator * g, struct node * p) {
 
 
 static void generate_try(struct generator * g, struct node * p) {
-    struct str * savevar;
+    struct str * savevar = NULL;
     int keep_c = K_needed(g, p->left);
 
     g->failure_label = new_label(g);
