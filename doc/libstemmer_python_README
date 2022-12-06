@@ -43,6 +43,19 @@ The ``snowballstemmer.stemmer`` function takes an algorithm name and returns a
    stemmer = snowballstemmer.stemmer('english');
    print(stemmer.stemWords("We are the world".split()));
 
+Generally you should create a stemmer object and reuse it rather than creating
+a fresh object for each word stemmed (since there's some cost to creating and
+destroying the object).
+
+The stemmer code is re-entrant, but not thread-safe if the same stemmer object
+is used concurrently in different threads.
+
+If you want to perform stemming concurrently in different threads, we suggest
+creating a new stemmer object for each thread.  The alternative is to share
+stemmer objects between threads and protect access using a mutex or similar
+(e.g. `threading.Lock` in Python) but that's liable to slow your program down
+as threads can end up waiting for the lock.
+
 Automatic Acceleration
 ----------------------
 
