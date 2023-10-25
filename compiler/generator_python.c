@@ -512,11 +512,10 @@ static void generate_GO_grouping(struct generator * g, struct node * p, int is_g
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? "" : "_b";
     g->S[1] = complement ? "in" : "out";
-    g->S[2] = g->options->encoding == ENC_UTF8 ? "_U" : "";
     g->V[0] = p->name;
     g->I[0] = q->smallest_ch;
     g->I[1] = q->largest_ch;
-    write_failure_if(g, "not self.go_~S1_grouping~S0~S2(~n.~W0, ~I0, ~I1)", p);
+    write_failure_if(g, "not self.go_~S1_grouping~S0(~n.~W0, ~I0, ~I1)", p);
     if (!is_goto) {
         if (p->mode == m_forward)
             w(g, "~Mself.cursor += 1~N");
@@ -951,9 +950,22 @@ static void generate_integer_assign(struct generator * g, struct node * p, char 
     w(g, "~M~V0 ~S0 "); generate_AE(g, p->AE); w(g, "~N");
 }
 
-static void generate_integer_test(struct generator * g, struct node * p, char * s) {
+static void generate_integer_test(struct generator * g, struct node * p) {
 
-    w(g, "~Mif not ");
+    const char * s;
+    // We want the inverse of the snowball test here.
+    switch (p->type) {
+        case c_eq: s = "!="; break;
+        case c_ne: s = "=="; break;
+        case c_gr: s = "<="; break;
+        case c_ge: s = "<"; break;
+        case c_ls: s = ">="; break;
+        case c_le: s = ">"; break;
+        default:
+            fprintf(stderr, "Unexpected type #%d in generate_integer_test\n", p->type);
+            exit(1);
+    }
+    w(g, "~Mif ");
     generate_AE(g, p->left);
     write_char(g, ' ');
     write_string(g, s);
@@ -1054,6 +1066,14 @@ static void generate_among(struct generator * g, struct node * p) {
         /* Only one outcome ("no match" already handled). */
         generate(g, x->commands[0]);
     } else if (x->command_count > 0) {
+        /* We dispatch the integer result in `among_var` with an if-chain,
+         * which is O(n) unless Python has a special optimisation (and
+         * profiling with the `timeit` module suggests it doesn't).  There
+         * doesn't appear to be a good alternative in Python (3.10 added
+         * `match` but that seems to be aimed more at pattern matching rather
+         * than O(1) dispatch of an integer and it was actually slower when we
+         * tried generating it here).
+         */
         int i;
         for (i = 1; i <= x->command_count; i++) {
             if (i == x->command_count && x->nocommand_count == 0) {
@@ -1154,12 +1174,14 @@ static void generate(struct generator * g, struct node * p) {
             generate_AE(g, p->AE);
             w(g, ")~N");
             break;
-        case c_eq:            generate_integer_test(g, p, "=="); break;
-        case c_ne:            generate_integer_test(g, p, "!="); break;
-        case c_gr:            generate_integer_test(g, p, ">"); break;
-        case c_ge:            generate_integer_test(g, p, ">="); break;
-        case c_ls:            generate_integer_test(g, p, "<"); break;
-        case c_le:            generate_integer_test(g, p, "<="); break;
+        case c_eq:
+        case c_ne:
+        case c_gr:
+        case c_ge:
+        case c_ls:
+        case c_le:
+            generate_integer_test(g, p);
+            break;
         case c_call:          generate_call(g, p); break;
         case c_grouping:      generate_grouping(g, p, false); break;
         case c_non:           generate_grouping(g, p, true); break;
