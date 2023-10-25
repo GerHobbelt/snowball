@@ -65,7 +65,7 @@ tarball_ext = .tar.gz
 # * KOI8_R_algorithms
 include algorithms.mk
 
-other_algorithms = german2 kraaij_pohlmann lovins
+other_algorithms = kraaij_pohlmann lovins
 
 all_algorithms = $(libstemmer_algorithms) $(other_algorithms)
 
@@ -169,7 +169,7 @@ C_OTHER_OBJECTS = $(C_OTHER_SOURCES:.c=.o)
 JAVA_CLASSES = $(JAVA_SOURCES:.java=.class)
 JAVA_RUNTIME_CLASSES=$(JAVARUNTIME_SOURCES:.java=.class)
 
-CFLAGS=-O2 -W -Wall -Wmissing-prototypes -Wmissing-declarations
+CFLAGS=-g -O2 -W -Wall -Wmissing-prototypes -Wmissing-declarations
 CPPFLAGS=
 
 INCLUDES=-Iinclude
