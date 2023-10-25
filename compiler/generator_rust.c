@@ -905,41 +905,19 @@ static void generate_integer_assign(struct generator * g, struct node * p, char 
 
 static void generate_integer_test(struct generator * g, struct node * p) {
 
-    const char * s;
+    int relop = p->type;
     int optimise_to_return = (g->failure_label == x_return && p->right && p->right->type == c_functionend);
     if (optimise_to_return) {
         w(g, "~Mreturn ");
-        switch (p->type) {
-            case c_eq: s = "=="; break;
-            case c_ne: s = "!="; break;
-            case c_gr: s = ">"; break;
-            case c_ge: s = ">="; break;
-            case c_ls: s = "<"; break;
-            case c_le: s = "<="; break;
-            default:
-                fprintf(stderr, "Unexpected type #%d in generate_integer_test\n", p->type);
-                exit(1);
-        }
         p->right = NULL;
     } else {
         w(g, "~Mif ");
         // We want the inverse of the snowball test here.
-        switch (p->type) {
-            case c_eq: s = "!="; break;
-            case c_ne: s = "=="; break;
-            case c_gr: s = "<="; break;
-            case c_ge: s = "<"; break;
-            case c_ls: s = ">="; break;
-            case c_le: s = ">"; break;
-            default:
-                fprintf(stderr, "Unexpected type #%d in generate_integer_test\n", p->type);
-                exit(1);
-        }
+	relop ^= 1;
     }
     generate_AE(g, p->left);
-    write_char(g, ' ');
-    write_string(g, s);
-    write_char(g, ' ');
+    // Relational operators are the same as C.
+    write_c_relop(g, relop);
     generate_AE(g, p->AE);
     if (optimise_to_return) {
         w(g, "~N");
@@ -953,21 +931,21 @@ static void generate_integer_test(struct generator * g, struct node * p) {
 
 static void generate_call(struct generator * g, struct node * p) {
 
-    int signals = check_possible_signals_list(g, p->name->definition, 0);
+    int signals = check_possible_signals_list(g, p->name->definition, c_define, 0);
     write_comment(g, p);
     g->V[0] = p->name;
     if (g->failure_keep_count == 0 && g->failure_label == x_return &&
         (signals == 0 || (p->right && p->right->type == c_functionend))) {
         /* Always fails or tail call. */
-        writef(g, "~Mreturn ~W0(env, context)", p);
+        writef(g, "~Mreturn ~W0(env, context);~N", p);
         return;
     }
     if (signals == 1) {
         /* Always succeeds. */
-        writef(g, "~M~W0(env, context)~N", p);
+        writef(g, "~M~W0(env, context);~N", p);
     } else if (signals == 0) {
         /* Always fails. */
-        writef(g, "~M~W0(env, context)~N", p);
+        writef(g, "~M~W0(env, context);~N", p);
         write_failure(g);
     } else {
         write_failure_if(g, "!~W0(env, context)", p);
@@ -1044,7 +1022,7 @@ static void generate_define(struct generator * g, struct node * p) {
     str_clear(g->failure_str);
     g->failure_label = x_return;
     g->unreachable = false;
-    int signals = check_possible_signals_list(g, p->left, 0);
+    int signals = check_possible_signals_list(g, p->left, c_define, 0);
     generate(g, p->left);
     if (p->left->right) {
         assert(p->left->right->type == c_functionend);

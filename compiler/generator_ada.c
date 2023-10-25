@@ -80,6 +80,20 @@ static void write_margin(struct generator * g) {
     for (i = 0; i < g->margin; i++) write_string(g, "   ");
 }
 
+static void write_relop(struct generator * g, int relop) {
+    switch (relop) {
+	case c_eq: write_string(g, " = "); break;
+	case c_ne: write_string(g, " /= "); break;
+	case c_gr: write_string(g, " > "); break;
+	case c_ge: write_string(g, " >= "); break;
+	case c_ls: write_string(g, " < "); break;
+	case c_le: write_string(g, " <= "); break;
+	default:
+	    fprintf(stderr, "Unexpected type #%d in generate_integer_test\n", relop);
+	    exit(1);
+    }
+}
+
 /* Write a variable declaration. */
 static void write_declare(struct generator * g,
                           char * declaration,
@@ -1009,41 +1023,18 @@ static void generate_integer_assign(struct generator * g, struct node * p, char 
 
 static void generate_integer_test(struct generator * g, struct node * p) {
 
-    const char * s;
+    int relop = p->type;
     int optimise_to_return = (g->failure_label == x_return && p->right && p->right->type == c_functionend);
     if (optimise_to_return) {
         w(g, "~MResult := (");
-        switch (p->type) {
-            case c_eq: s = "="; break;
-            case c_ne: s = "/="; break;
-            case c_gr: s = ">"; break;
-            case c_ge: s = ">="; break;
-            case c_ls: s = "<"; break;
-            case c_le: s = "<="; break;
-            default:
-                fprintf(stderr, "Unexpected type #%d in generate_integer_test\n", p->type);
-                exit(1);
-        }
         p->right = NULL;
     } else {
         w(g, "~Mif ");
         // We want the inverse of the snowball test here.
-        switch (p->type) {
-            case c_eq: s = "/="; break;
-            case c_ne: s = "="; break;
-            case c_gr: s = "<="; break;
-            case c_ge: s = "<"; break;
-            case c_ls: s = ">="; break;
-            case c_le: s = ">"; break;
-            default:
-                fprintf(stderr, "Unexpected type #%d in generate_integer_test\n", p->type);
-                exit(1);
-        }
+	relop ^= 1;
     }
     generate_AE(g, p->left);
-    write_char(g, ' ');
-    write_string(g, s);
-    write_char(g, ' ');
+    write_relop(g, relop);
     generate_AE(g, p->AE);
     if (optimise_to_return) {
         w(g, ");~N");
@@ -1057,7 +1048,7 @@ static void generate_integer_test(struct generator * g, struct node * p) {
 
 static void generate_call(struct generator * g, struct node * p) {
 
-    int signals = check_possible_signals_list(g, p->name->definition, 0);
+    int signals = check_possible_signals_list(g, p->name->definition, c_define, 0);
     write_comment(g, p);
     g->V[0] = p->name;
     if (g->failure_keep_count == 0 && g->failure_label == x_return) {
@@ -1068,17 +1059,17 @@ static void generate_call(struct generator * g, struct node * p) {
         }
         if (signals == 0) {
             /* Always fails. */
-            writef(g, "~M~V0 (Z, Result)~N", p);
+            writef(g, "~M~V0 (Z, Result);~N", p);
             w(g, "~Mreturn~N");
             return;
         }
     }
     if (signals == 1) {
         /* Always succeeds. */
-        writef(g, "~M~V0 (Z, Result)~N", p);
+        writef(g, "~M~V0 (Z, Result);~N", p);
     } else if (signals == 0) {
         /* Always fails. */
-        writef(g, "~M~V0 (Z, Result)~N", p);
+        writef(g, "~M~V0 (Z, Result);~N", p);
         write_failure(g);
     } else {
         writef(g, "~M~V0 (Z, Result);~N", p);
@@ -1150,7 +1141,7 @@ static void generate_define(struct generator * g, struct node * p) {
 
     /* Generate function body. */
     w(g, "~{");
-    int signals = check_possible_signals_list(g, p->left, 0);
+    int signals = check_possible_signals_list(g, p->left, c_define, 0);
     generate(g, p->left);
     if (p->left->right) {
         assert(p->left->right->type == c_functionend);
