@@ -423,7 +423,10 @@ static struct node * read_AE(struct analyser * a, struct name * assigned_to, int
         case c_sizeof: {
             int token = t->token;
             p = C_style(a, "S", token);
-            if (!p->literalstring) break;
+            if (!p->literalstring) {
+                if (p->name) p->name->value_used = true;
+                break;
+            }
 
             /* Replace lenof or sizeof on a literal string with a numeric
              * constant.
@@ -474,6 +477,11 @@ static struct node * read_AE(struct analyser * a, struct name * assigned_to, int
                     q->number = p->number * r->number;
                     break;
                 case c_divide:
+                    if (r->number == 0) {
+                        fprintf(stderr, "%s:%d: Division by zero\n",
+				t->file, t->line_number);
+                        exit(1);
+                    }
                     q->number = p->number / r->number;
                     break;
                 default:
@@ -482,9 +490,90 @@ static struct node * read_AE(struct analyser * a, struct name * assigned_to, int
                     exit(1);
             }
         } else {
-            q = new_node(a, token);
-            q->left = p;
-            q->right = r;
+            // Check for specific constant or no-op cases.
+            q = NULL;
+            switch (token) {
+                case c_plus:
+                    // 0 + r is r
+                    if (p->type == c_number && p->number == 0) {
+                        q = r;
+                        break;
+                    }
+                    // p + 0 is p
+                    if (r->type == c_number && r->number == 0) {
+                        q = p;
+                        break;
+                    }
+                    break;
+                case c_minus:
+                    // 0 - r is -r
+                    if (p->type == c_number && p->number == 0) {
+                        q = new_node(a, c_neg);
+                        q->right = r;
+                        break;
+                    }
+                    // p - 0 is p
+                    if (r->type == c_number && r->number == 0) {
+                        q = p;
+                        break;
+                    }
+                    break;
+                case c_multiply:
+                    // 0 * r or p * 0 is 0
+                    if ((p->type == c_number && p->number == 0) ||
+                        (r->type == c_number && r->number == 0)) {
+                        q = new_node(a, c_number);
+                        q->number = 0;
+                        break;
+                    }
+                    // -1 * r is -r
+                    if (p->type == c_number && p->number == -1) {
+                        q = new_node(a, c_neg);
+                        q->right = r;
+                        break;
+                    }
+                    // p * -1 is -p
+                    if (r->type == c_number && r->number == -1) {
+                        q = new_node(a, c_neg);
+                        q->right = p;
+                        break;
+                    }
+                    // 1 * r is r
+                    if (p->type == c_number && p->number == 1) {
+                        q = r;
+                        break;
+                    }
+                    // p * 1 is p
+                    if (r->type == c_number && r->number == 1) {
+                        q = p;
+                        break;
+                    }
+                    break;
+                case c_divide:
+                    // p / 1 is p
+                    if (r->type == c_number && r->number == 1) {
+                        q = p;
+                        break;
+                    }
+                    // p / -1 is -p
+                    if (r->type == c_number && r->number == -1) {
+                        q = new_node(a, c_neg);
+                        q->right = p;
+                        break;
+                    }
+                    // p / 0 is an error!
+                    if (r->type == c_number && r->number == 0) {
+                        fprintf(stderr, "%s:%d: Division by zero\n",
+				t->file, t->line_number);
+                        exit(1);
+                    }
+                    break;
+            }
+            if (!q) {
+                q = new_node(a, token);
+                q->left = p;
+                q->right = r;
+            }
         }
         p = q;
     }
