@@ -3,7 +3,6 @@
 #include <string.h> /* for strlen */
 #include <stdio.h> /* for fprintf etc */
 #include <ctype.h>
-#include <limits.h>
 #include "header.h"
 
 /* prototypes */
@@ -1164,7 +1163,7 @@ static void generate_substring(struct generator * g, struct node * p) {
     int empty_case = -1;
     int n_cases = 0;
     symbol cases[2];
-    int shortest_size = INT_MAX;
+    int shortest_size = x->shortest_size;
     int call_done = 0;
     int need_among_handler = (x->function_count > 0);
 
@@ -1180,13 +1179,6 @@ static void generate_substring(struct generator * g, struct node * p) {
      * In backward mode, we can't match if there are fewer characters before
      * the current position than the minimum length.
      */
-    for (c = 0; c < x->literalstring_count; ++c) {
-        int size = among_cases[c].size;
-        if (size != 0 && size < shortest_size) {
-            shortest_size = size;
-        }
-    }
-
     for (c = 0; c < x->literalstring_count; ++c) {
         symbol ch;
         if (among_cases[c].size == 0) {
@@ -1466,32 +1458,13 @@ static void generate_method_decls(struct generator * g, enum name_types type) {
     }
 }
 
-static int has_string_variable(struct generator * g) {
-    struct name * q;
-    for (q = g->analyser->names; q; q = q->next) {
-        g->V[0] = q;
-        if (q->type == t_string) {
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
 static void generate_member_decls(struct generator * g) {
-    struct name * q;
-    int count = 0;
-
-    
-    for (q = g->analyser->names; q; q = q->next) {
-        if (q->type == t_string || q->type == t_integer || q->type == t_boolean)
-            count++;
-    }
-
     w(g, "   type Context_Type is new Stemmer.Context_Type with");
-    if (count > 0) {
+    if (g->analyser->name_count[t_string] > 0 ||
+        g->analyser->name_count[t_integer] > 0 ||
+        g->analyser->name_count[t_boolean] > 0) {
         w(g, " record~N~+");
-        for (q = g->analyser->names; q; q = q->next) {
+        for (struct name * q = g->analyser->names; q; q = q->next) {
             g->V[0] = q;
             switch (q->type) {
                 case t_string:
@@ -1737,7 +1710,7 @@ extern void generate_program_ada(struct generator * g) {
 
     g->margin = 0;
     write_start_comment(g, "--  ", NULL);
-    if (has_string_variable(g)) {
+    if (g->analyser->name_count[t_string]) {
         w(g, "private with Ada.Strings.Unbounded;~N");
     }
     w(g, "package Stemmer.");
