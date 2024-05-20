@@ -2,6 +2,7 @@
 package org.tartarus.snowball;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.io.Serializable;
+import java.util.Arrays;
 
 /**
  * Base class for a snowball stemmer
@@ -9,7 +10,6 @@ import java.io.Serializable;
 public class SnowballProgram implements Serializable {
     protected SnowballProgram()
     {
-	current = new char[8];
 	setCurrent("");
     }
 
@@ -20,12 +20,7 @@ public class SnowballProgram implements Serializable {
      */
     public void setCurrent(String value)
     {
-	current = value.toCharArray();
-	cursor = 0;
-	limit = value.length();
-	limit_backward = 0;
-	bra = cursor;
-	ket = limit;
+	setCurrent(value.toCharArray(), value.length());
     }
 
     /**
@@ -33,7 +28,7 @@ public class SnowballProgram implements Serializable {
      */
     public String getCurrent()
     {
-        return new String(current, 0, limit);
+        return new String(current, 0, length);
     }
 
     /**
@@ -44,7 +39,7 @@ public class SnowballProgram implements Serializable {
     public void setCurrent(char[] text, int length) {
         current = text;
         cursor = 0;
-        limit = length;
+        this.length = limit = length;
         limit_backward = 0;
         bra = cursor;
         ket = limit;
@@ -74,13 +69,14 @@ public class SnowballProgram implements Serializable {
      * @return valid length of the array.
      */
     public int getCurrentBufferLength() {
-        return limit;
+        return length;
     }
 
     // current string
     private char[] current;
 
     protected int cursor;
+    protected int length;
     protected int limit;
     protected int limit_backward;
     protected int bra;
@@ -89,6 +85,7 @@ public class SnowballProgram implements Serializable {
     public SnowballProgram(SnowballProgram other) {
 	current          = other.current;
 	cursor           = other.cursor;
+	length           = other.length;
 	limit            = other.limit;
 	limit_backward   = other.limit_backward;
 	bra              = other.bra;
@@ -99,6 +96,7 @@ public class SnowballProgram implements Serializable {
     {
 	current          = other.current;
 	cursor           = other.cursor;
+	length           = other.length;
 	limit            = other.limit;
 	limit_backward   = other.limit_backward;
 	bra              = other.bra;
@@ -314,34 +312,22 @@ public class SnowballProgram implements Serializable {
 	}
     }
 
-    // mini version of ArrayUtil.oversize from lucene, specialized to chars
-    static int oversize(int minTargetSize) {
-	int extra = minTargetSize >> 3;
-	if (extra < 3) {
-	    extra = 3;
-	}
-	int newSize = minTargetSize + extra;
-	return (newSize + 3) & 0x7ffffffc;
-    }
-
     /* to replace chars between c_bra and c_ket in current by the
      * chars in s.
      */
     protected int replace_s(int c_bra, int c_ket, CharSequence s)
     {
 	final int adjustment = s.length() - (c_ket - c_bra);
-	final int newLength = limit + adjustment;
+	final int newLength = length + adjustment;
 	//resize if necessary
 	if (newLength > current.length) {
-	    char[] newBuffer = new char[oversize(newLength)];
-	    System.arraycopy(current, 0, newBuffer, 0, limit);
-	    current = newBuffer;
+	    current = Arrays.copyOf(current, newLength);
 	}
 	// if the substring being replaced is longer or shorter than the
 	// replacement, need to shift things around
-	if (adjustment != 0 && c_ket < limit) {
+	if (adjustment != 0 && c_ket < length) {
 	    System.arraycopy(current, c_ket, current, c_bra + s.length(),
-	        limit - c_ket);
+	        length - c_ket);
 	}
 	// insert the replacement text
 	// Note, faster is s.getChars(0, s.length(), current, c_bra);
@@ -349,6 +335,7 @@ public class SnowballProgram implements Serializable {
 	for (int i = 0; i < s.length(); i++)
 	    current[c_bra + i] = s.charAt(i);
 
+	length += adjustment;
 	limit += adjustment;
 	if (cursor >= c_ket) cursor += adjustment;
 	else if (cursor > c_bra) cursor = c_bra;
@@ -357,12 +344,10 @@ public class SnowballProgram implements Serializable {
 
     protected void slice_check()
     {
-	if (bra < 0 ||
-	    bra > ket ||
-	    ket > limit)
-	{
-	     throw new IllegalArgumentException("faulty slice operation: bra=" + bra + ",ket=" + ket + ",limit=" + limit);
-	}
+	assert bra >= 0 : "bra=" + bra;
+	assert bra <= ket : "bra=" + bra + ",ket=" + ket;
+	assert limit <= length : "limit=" + limit + ",length=" + length;
+	assert ket <= limit : "ket=" + ket + ",limit=" + limit;
     }
 
     protected void slice_from(CharSequence s)
