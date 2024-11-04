@@ -172,7 +172,7 @@ static void write_failure(struct generator * g) {
     write_newline(g);
 }
 
-static void write_failure_if(struct generator * g, char * s, struct node * p) {
+static void write_failure_if(struct generator * g, const char * s, struct node * p) {
 
     writef(g, "~Mif (", p);
     writef(g, s, p);
@@ -231,7 +231,7 @@ static void writef(struct generator * g, const char * input, struct node * p) {
 }
 
 static void w(struct generator * g, const char * s) {
-    writef(g, s, 0);
+    writef(g, s, NULL);
 }
 
 static void generate_AE(struct generator * g, struct node * p) {
@@ -305,7 +305,7 @@ static void generate_and(struct generator * g, struct node * p) {
     while (p) {
         generate(g, p);
         if (g->unreachable) break;
-        if (keep_c && p->right != 0) write_restorecursor(g, p, savevar);
+        if (keep_c && p->right != NULL) write_restorecursor(g, p, savevar);
         p = p->right;
     }
     str_delete(savevar);
@@ -330,13 +330,13 @@ static void generate_or(struct generator * g, struct node * p) {
     p = p->left;
     str_clear(g->failure_str);
 
-    if (p == 0) {
+    if (p == NULL) {
         /* p should never be 0 after an or: there should be at least two
          * sub nodes. */
         fprintf(stderr, "Error: \"or\" node without children nodes.");
         exit(1);
     }
-    while (p->right != 0) {
+    while (p->right != NULL) {
         g->failure_label = new_label(g);
         wsetlab_begin(g, g->failure_label);
         generate(g, p);
@@ -576,7 +576,7 @@ static void generate_repeat_or_atleast(struct generator * g, struct node * p, st
     generate(g, p->left);
 
     if (!g->unreachable) {
-        if (loopvar != 0) {
+        if (loopvar != NULL) {
             g->B[0] = str_data(loopvar);
             w(g, "~M~B0--;~N");
         }
@@ -757,7 +757,7 @@ static void generate_sliceto(struct generator * g, struct node * p) {
 static void generate_address(struct generator * g, struct node * p) {
 
     symbol * b = p->literalstring;
-    if (b != 0) {
+    if (b != NULL) {
         write_literal_string(g, b);
     } else {
         write_varref(g, p->name);
@@ -931,7 +931,7 @@ static void generate_dollar(struct generator * g, struct node * p) {
     str_delete(savevar);
 }
 
-static void generate_integer_assign(struct generator * g, struct node * p, char * s) {
+static void generate_integer_assign(struct generator * g, struct node * p, const char * s) {
 
     g->V[0] = p->name;
     g->S[0] = s;
@@ -1017,6 +1017,7 @@ static void generate_literalstring(struct generator * g, struct node * p) {
 
 static void generate_define(struct generator * g, struct node * p) {
     struct name * q = p->name;
+    if (q->type == t_routine && !q->used) return;
 
     struct str * saved_output = g->outbuf;
     struct str * saved_declarations = g->declarations;
@@ -1090,7 +1091,7 @@ static void generate_among(struct generator * g, struct node * p) {
 
     struct among * x = p->among;
 
-    if (x->substring == 0) generate_substring(g, p);
+    if (x->substring == NULL) generate_substring(g, p);
 
     if (x->command_count == 1 && x->nocommand_count == 0) {
         /* Only one outcome ("no match" already handled). */
@@ -1272,7 +1273,7 @@ static void generate_among_table(struct generator * g, struct among * x) {
             g->S[0] = i < x->literalstring_count - 1 ? "," : "";
 
             w(g, "~M[~L0, ~I0, ~I1");
-            if (v->function != 0) {
+            if (v->function != NULL) {
                 w(g, ", ");
                 write_varname(g, v->function);
             }
@@ -1347,7 +1348,7 @@ static void generate_members(struct generator * g) {
 static void generate_methods(struct generator * g) {
 
     struct node * p = g->analyser->program;
-    while (p != 0) {
+    while (p != NULL) {
         generate(g, p);
         g->unreachable = false;
         p = p->right;
