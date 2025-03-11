@@ -1,6 +1,7 @@
 // Copyright (c) 2001, Dr Martin Porter
 // Copyright (c) 2002, Richard Boulton
 // Copyright (c) 2015, Cesar Souza
+// Copyright (c) 2025, Olly Betts
 // All rights reserved.
 // 
 // Redistribution and use in source and binary forms, with or without
@@ -32,7 +33,6 @@ namespace Snowball
     using System.IO;
     using System.Reflection;
     using System.Linq;
-    using System.Text;
 
     /// <summary>
     ///   Snowball's Stemmer program.
@@ -43,7 +43,7 @@ namespace Snowball
 
         private static void usage()
         {
-            Console.WriteLine("Usage: stemwords.exe -l <language> -i <input file> [-o <output file>]");
+            Console.WriteLine("Usage: stemwords.exe -l <language> [-i <input file>] [-o <output file>]");
         }
 
         /// <summary>
@@ -62,11 +62,11 @@ namespace Snowball
                     language = args[i + 1];
                 else if (args[i] == "-i")
                     inputName = args[i + 1];
-                if (args[i] == "-o")
+                else if (args[i] == "-o")
                     outputName = args[i + 1];
             }
 
-            if (language == null || inputName == null)
+            if (language == null)
             {
                 usage();
                 return;
@@ -89,13 +89,17 @@ namespace Snowball
             Console.WriteLine("Using " + stemmer.GetType());
 
             TextWriter output = System.Console.Out;
-
             if (outputName != null)
                 output = new StreamWriter(outputName);
 
+            TextReader input = System.Console.In;
+            if (inputName != null)
+                input = new StreamReader(inputName);
 
-            foreach (var line in File.ReadAllLines(inputName))
+            while (true)
             {
+                var line = input.ReadLine();
+                if (line == null) break;
                 var o = stemmer.Stem(line);
                 output.WriteLine(o);
             }
@@ -105,7 +109,7 @@ namespace Snowball
 
         private static bool match(string stemmerName, string language)
         {
-            string expectedName = language.Replace("_", "") + "Stemmer";
+            string expectedName = language + "Stemmer";
 
             return stemmerName.StartsWith(expectedName,
                 StringComparison.CurrentCultureIgnoreCase);
