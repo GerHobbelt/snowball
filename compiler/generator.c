@@ -491,6 +491,7 @@ static int repeat_score(struct generator * g, struct node * p, int call_depth) {
     int score = 0;
     while (p) {
         switch (p->type) {
+            case c_atlimit:
             case c_dollar:
             case c_leftslice:
             case c_rightslice:
@@ -506,6 +507,12 @@ static int repeat_score(struct generator * g, struct node * p, int call_depth) {
             case c_lt:
             case c_le:
             case c_sliceto:   /* case c_not: must not be included here! */
+            case c_booltest:
+            case c_not_booltest:
+            case c_set:
+            case c_unset:
+            case c_true:
+            case c_false:
             case c_debug:
             case c_functionend:
                 break;
@@ -537,10 +544,14 @@ static int repeat_score(struct generator * g, struct node * p, int call_depth) {
             case c_next:
             case c_grouping:
             case c_non:
+#if 0
+            // These could be here if the target-language helpers all preserved
+            // the cursor on failure:
             case c_goto_grouping:
             case c_gopast_grouping:
             case c_goto_non:
             case c_gopast_non:
+#endif
             case c_hop:
                 if (++score >= 2)
                     return score;
@@ -988,17 +999,13 @@ static void generate_hop(struct generator * g, struct node * p) {
             //
             // No need to check for negative hop as that's converted to false by
             // the analyser.
-            //
-            // Note that if we signal f then z->c will be reset when this is
-            // handled - we rely on this here and unconditionally update z->c.
-            w(g, "z->c = z->c ~S0 ");
-            generate_AE(g, p->AE);
-            writef(g, ";~N", p);
+            g->I[0] = p->AE->number;
             if (p->mode == m_forward) {
-                writef(g, "~Mif (z->c > z->l) ~f~N", p);
+                writef(g, "~Mif (z->c ~S0 ~I0 > z->l) ~f~N", p);
             } else {
-                writef(g, "~Mif (z->c < z->lb) ~f~N", p);
+                writef(g, "~Mif (z->c ~S0 ~I0 < z->lb) ~f~N", p);
             }
+            writef(g, "~Mz->c = z->c ~S0 ~I0;~N", p);
         } else {
             w(g, "~{~Mint ret = z->c ~S0 ");
             generate_AE(g, p->AE);
@@ -1807,10 +1814,11 @@ static void generate_header_file(struct generator * g) {
                         count += g->analyser->name_count[t_integer];
                     }
                     g->I[0] = count;
-                    g->I[1] = "SIIrxg"[q->type];
                     w(g, "#define ~S0");
                     write_s(g, q->s);
-                    w(g, " (~c1[~I0])~N");
+                    w(g, " (");
+                    write_char(g, "SIIrxg"[q->type]);
+                    w(g, "[~I0])~N");
                 }
                 break;
         }

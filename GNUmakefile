@@ -231,7 +231,18 @@ update_version:
 		csharp/Snowball/AssemblyInfo.cs \
 		python/setup.py
 
-.PHONY: all clean update_version
+everything: all java csharp pascal js rust go python ada
+
+baseline-create: everything
+	rm -rf *.baseline
+	for d in src_c java csharp pascal js_out go python_out ada ; do cp -a $$d $$d.baseline ; done
+	rm -rf *.baseline/*.o ada.baseline/obj pascal.baseline/*.ppu
+	find java.baseline -name '*.class' -delete
+
+baseline-diff:
+	@for d in src_c java csharp pascal js_out go python_out ada ; do diff -ru -x'*.o' -x'obj' -x'*.ppu' -x'*.class' $$d.baseline $$d ; done
+
+.PHONY: all clean update_version everything baseline-create baseline-diff
 
 $(STEMMING_DATA)/% $(STEMMING_DATA_ABS)/%:
 	@[ -f '$@' ] || { echo '$@: Test data not found'; echo 'Checkout the snowball-data repo as "$(STEMMING_DATA_ABS)"'; exit 1; }
@@ -564,6 +575,8 @@ check_koi8r_%: $(STEMMING_DATA)/% stemwords$(EXEEXT)
 
 .PHONY: java check_java do_check_java
 
+.SUFFIXES: .class .java
+
 java: $(JAVA_CLASSES) $(JAVA_RUNTIME_CLASSES)
 
 .java.class:
@@ -797,5 +810,3 @@ ada/bin/generate:
 
 ada/bin/stemwords: $(ADA_SOURCES)
 	cd ada && $(gprbuild) -Pstemwords -p
-
-.SUFFIXES: .class .java
