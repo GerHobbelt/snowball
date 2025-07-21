@@ -35,9 +35,14 @@ define mark_regions as (
     $p2 = limit
     do(
         among (
-            'gener'
-            'commun'  //  added May 2005
-            'arsen'   //  added Nov 2006 (arsenic/arsenal)
+            'gener'   // generate/general/generic/generous
+            'commun'  // communication/communism/community
+            'arsen'   // arsenic/arsenal
+            'past'    // past/paste
+            'univers' // universe/universal/university
+            'later'   // lateral/later
+            'emerg'   // emerge/emergency
+            'organ'   // organ/organic/organize
             // ... extensions possible here ...
         ) or (gopast v  gopast non-v)
         setmark p1
@@ -51,6 +56,8 @@ backwardmode (
         ( non-v_WXY v non-v )
         or
         ( non-v v atlimit )
+        or
+        ( 'past' ) // pasted/pasting
     )
 
     define R1 as $p1 <= cursor
@@ -120,6 +127,7 @@ backwardmode (
                       (<-'ive')
             'biliti' 'bli'
                       (<-'ble')
+            'ogist'   (<-'og')
             'ogi'     ('l' <-'og')
             'fulli'   (<-'ful')
             'lessli'  (<-'less')
@@ -137,7 +145,7 @@ backwardmode (
             'ful' 'ness'
                       (delete)
             'ative'
-                      (R2 delete)  // 'R2' added Dec 2001
+                      (R2 delete)
         )
     )
 

@@ -79,7 +79,6 @@ static const char * name_of_mode(int n) {
     switch (n) {
         case m_backward: return "string backward";
         case m_forward:  return "string forward";
-    /*  case m_integer:  return "integer";  */
     }
     fprintf(stderr, "Invalid mode %d in name_of_mode()\n", n);
     exit(1);
@@ -1044,7 +1043,7 @@ static struct node * read_C(struct analyser * a) {
         case c_gopast: {
             struct node * subcommand = read_C(a);
             if (subcommand->type == c_grouping || subcommand->type == c_non) {
-                /* We synthesise special command for "goto" or "gopast" when
+                /* We synthesise special commands for "goto" or "gopast" when
                  * used on a grouping or an inverted grouping - the movement of
                  * c by the matching action is exactly what we want!
                  *
