@@ -14,7 +14,7 @@ externals ( stem )
 
 integers ( pV p1 p2 )
 
-groupings ( elision_char v keep_with_s )
+groupings ( elision_char v keep_with_s oux_ending )
 
 stringescapes {}
 
@@ -35,6 +35,9 @@ stringdef u^   '{U+00FB}'  // u-circumflex
 stringdef u`   '{U+00F9}'  // u-grave
 
 define v 'aeiouy{a^}{a`}{e"}{e'}{e^}{e`}{i"}{i^}{o^}{u^}{u`}'
+
+// Replace -oux with -ou if preceded by one of these letters.
+define oux_ending 'bhjlnp'
 
 // Single character elisions
 define elision_char 'cdjlmnst'
@@ -70,9 +73,12 @@ define mark_regions as (
         ( v v next )
         or
         among ( // this exception list begun Nov 2006
-            'par'  // paris, parie, pari
-            'col'  // colis
-            'tap'  // tapis
+            'par'    // paris, parie, pari
+            'col'    // colis
+            'tap'    // tapis
+            'mauva'  // mauvais
+                ()
+            'ni' (v) // niais/nierais/nié/niâmes/nièrent
             // extensions possible here
         )
         or
@@ -159,6 +165,7 @@ backwardmode (
             )
             'eaux' (<- 'eau')
             'aux'  (R1 <- 'al')
+            'oux'  (oux_ending <- 'ou')
             'euse'
             'euses'((R2 delete) or (R1<-'eux'))
 
@@ -203,9 +210,7 @@ backwardmode (
             '{a^}mes' '{a^}t' '{a^}tes' 'a' 'ai' 'aIent' 'ais' 'ait' 'ant'
             'ante' 'antes' 'ants' 'as' 'asse' 'assent' 'asses' 'assiez'
             'assions'
-                (delete
-                 try(['e'] delete)
-                )
+                ( try('e']) delete )
         )
     )
 
