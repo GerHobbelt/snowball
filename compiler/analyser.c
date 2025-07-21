@@ -774,11 +774,12 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
     x->next = NULL;
     x->node = p;
     x->b = v;
-    x->number = a->among_count++;
+    x->number = 0; // Number after we've identified any unreachable amongs.
     x->function_count = 0;
     x->nocommand_count = 0;
     x->amongvar_needed = false;
     x->always_matches = false;
+    x->used = false;
     x->shortest_size = INT_MAX;
 
     if (q->type == c_bra) {
@@ -918,8 +919,6 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
     x->substring = substring;
     if (substring != NULL) substring->among = x;
 
-    if (x->function_count > 0) ++a->among_with_function_count;
-
     return p;
 }
 
@@ -1053,7 +1052,19 @@ static struct node * read_C(struct analyser * a) {
                     return p;
                 }
             }
-        case c_not:
+        case c_not: {
+            struct node * subcommand = read_C(a);
+            if (subcommand->type == c_booltest) {
+                /* We synthesise a special command for "not" applied to testing
+                 * a boolean variable.
+                 */
+                subcommand->type = c_not_booltest;
+                return subcommand;
+            }
+            struct node * p = new_node(a, token);
+            p->left = subcommand;
+            return p;
+        }
         case c_try:
         case c_fail:
         case c_test:
@@ -1530,7 +1541,19 @@ static void read_define_routine(struct analyser * a, struct name * q) {
      * can easily see where the function ends.
      */
     assert(p->left->right == NULL);
-    p->left->right = new_node(a, c_functionend);
+    if (p->left->type == c_bra) {
+        /* Put the "functionend" node at the end of the command list. */
+        struct node * e = p->left->left;
+        if (e) {
+            while (e->right) e = e->right;
+            e->right = new_node(a, c_functionend);
+        } else {
+            p->left = new_node(a, c_functionend);
+        }
+    } else {
+        /* Put the "functionend" node after the single command. */
+        p->left->right = new_node(a, c_functionend);
+    }
 
     if (a->substring != NULL) {
         error2(a, e_unresolved_substring, a->substring->line_number);
@@ -1636,6 +1659,271 @@ static void remove_dead_assignments(struct node * p, struct name * q) {
     if (p->right) remove_dead_assignments(p->right, q);
 }
 
+static void remove_unreachable_routine(struct analyser * a, struct name * q) {
+    struct node ** ptr = &(a->program);
+    while (*ptr) {
+        if ((*ptr)->name == q) {
+            *ptr = (*ptr)->right;
+        } else {
+            ptr = &((*ptr)->right);
+        }
+    }
+}
+
+// Return 0 for always f.
+// Return 1 for always t.
+// Return -1 for don't know (or can raise t or f).
+static int check_possible_signals(struct analyser * a, struct node * p) {
+    switch (p->type) {
+        case c_fail:
+        case c_false:
+            /* Always gives signal f. */
+            return 0;
+        case c_assign:
+        case c_attach:
+        case c_debug:
+        case c_delete:
+        case c_do:
+        case c_insert:
+        case c_leftslice:
+        case c_repeat:
+        case c_rightslice:
+        case c_set:
+        case c_setmark:
+        case c_slicefrom:
+        case c_sliceto:
+        case c_tolimit:
+        case c_tomark:
+        case c_true:
+        case c_try:
+        case c_unset:
+        case c_mathassign:
+        case c_plusassign:
+        case c_minusassign:
+        case c_multiplyassign:
+        case c_divideassign:
+        case c_functionend:
+            /* Always gives signal t. */
+            return 1;
+        case c_not: {
+            int res = p->left->possible_signals;
+            if (res >= 0)
+                res = !res;
+            if (res == 0 && p->right) {
+                if (p->right->type != c_functionend) {
+                    fprintf(stderr, "%s:%d: warning: 'not' always signals f so following commands are unreachable\n",
+                            a->tokeniser->file, p->line_number);
+                }
+                p->right = NULL;
+            }
+            return res;
+        }
+        case c_setlimit: {
+            /* If either always signals f, setlimit does to. */
+            int res = p->left->possible_signals;
+            int res2 = p->aux->possible_signals;
+            if (res == 0 || res2 == 0) {
+                return 0;
+            }
+            // If both always signal t, setlimit does to.  Otherwise we know at
+            // least one is unknown and that means setlimit's signal is unknown.
+            // We can achieve that with a simple bitwise or.
+            return res | res2;
+        }
+        case c_and:
+        case c_bra: {
+            struct node * q = p->left;
+            int r = 1;
+            while (q) {
+                int res = q->possible_signals;
+                if (res == 0) {
+                    // If any command always signals f, then the list always
+                    // signals f.
+                    if (q->right) {
+                        if (q->right->type != c_functionend) {
+                            fprintf(stderr, "%s:%d: warning: command always signals f here so rest of %s is unreachable\n",
+                                    a->tokeniser->file, q->line_number,
+                                    (p->type == c_and ? "'and'" : "command list"));
+                        }
+                        q->right = NULL;
+                    }
+                    return res;
+                }
+                if (res < 0) r = res;
+                q = q->right;
+            }
+            return r;
+        }
+        case c_atleast:
+        case c_backwards:
+        case c_loop:
+        case c_reverse:
+        case c_test:
+            /* Give same signal as p->left. */
+            return p->left->possible_signals;
+        case c_call:
+            // If the call recurses back into the current routine then this
+            // will still be -1.
+            return p->name->definition->possible_signals;
+        case c_gopast:
+        case c_goto:
+        case c_goto_grouping:
+        case c_gopast_grouping:
+        case c_goto_non:
+        case c_gopast_non:
+            /* FIXME: unless we can prove that c is either definitely atlimit
+             * or definitely not atlimit... */
+            return -1;
+        case c_atlimit:
+        case c_atmark:
+        case c_booltest:
+        case c_not_booltest:
+        case c_hop:
+        case c_literalstring:
+        case c_next:
+        case c_eq:
+        case c_ne:
+        case c_gt:
+        case c_ge:
+        case c_lt:
+        case c_le:
+        case c_grouping:
+        case c_non:
+        case c_name:
+            /* FIXME: unless we can prove... */
+            return -1;
+        case c_substring: {
+            struct among * x = p->among;
+            if (x->always_matches) {
+                return 1;
+            }
+            return -1;
+        }
+        case c_among: {
+            struct among * x = p->among;
+            int r = 1;
+
+            if (x->substring == NULL) {
+                if (!x->always_matches) {
+                    r = -1;
+                }
+            }
+
+            if (x->command_count > 0) {
+                int trues = (x->nocommand_count > 0);
+                int falses = false;
+                for (int i = 1; i <= x->command_count; i++) {
+                    int res = x->commands[i - 1]->possible_signals;
+                    if (res == 0) {
+                        falses = true;
+                    } else if (res > 0) {
+                        trues = true;
+                    } else {
+                        falses = trues = true;
+                    }
+                    if (falses && trues) break;
+                }
+                if (!trues) {
+                    // All commands in among always fail.
+                    return 0;
+                }
+                if (falses) {
+                    // Commands in among can succeed or fail.
+                    return -1;
+                }
+            }
+            return r;
+        }
+        case c_or: {
+            int r = 0;
+            for (struct node * q = p->left; q; q = q->right) {
+                // Just check this node - q->right is a separate clause of
+                // the OR.
+                int res = q->possible_signals;
+                if (res > 0) {
+                    // If any clause of the OR always signals t, then the OR
+                    // always signals t.
+                    if (q->right) {
+                        if (q->right->type != c_functionend) {
+                            fprintf(stderr, "%s:%d: warning: command always signals t here so rest of 'or' is unreachable\n",
+                                    a->tokeniser->file,
+                                    q->line_number);
+                        }
+                        q->right = NULL;
+                    }
+                    return 1;
+                }
+                if (res < 0) {
+                    r = res;
+                }
+            }
+            return r;
+        }
+        default:
+            return -1;
+    }
+}
+
+static void visit_routine(struct analyser * a, struct name * n);
+
+static void visit_node(struct analyser * a, struct node * p) {
+    while (p) {
+        if (p->name) {
+            if (p->type == c_call) {
+                visit_routine(a, p->name);
+            } else {
+                // Mark as reachable.
+                p->name->count = -2;
+            }
+        } else if (p->type == c_among) {
+            struct among * x = p->among;
+            x->used = true;
+            for (int i = 0; i < x->literalstring_count; ++i) {
+                if (x->b[i].function)
+                    visit_routine(a, x->b[i].function);
+            }
+            for (int i = 0; i < x->command_count; ++i) {
+                visit_node(a, x->commands[i]);
+            }
+        }
+        if (p->left) {
+            visit_node(a, p->left);
+        }
+        if (p->aux) {
+            visit_node(a, p->aux);
+        }
+        if (p->AE) {
+            visit_node(a, p->AE);
+        }
+
+        p->possible_signals = check_possible_signals(a, p);
+
+        p = p->right;
+    }
+}
+
+static void visit_routine(struct analyser * a, struct name * n) {
+    if (n->count == -2) {
+        // Already visited.  We set n->count before walking the definition so
+        // this also prevents the walk from reentering a routine via recursive
+        // calls.
+        return;
+    }
+    n->count = -2;
+
+    struct node * p = n->definition;
+
+    // Recursive functions are valid in the Snowball language, but aren't
+    // actually used in typical snowball programs so we take a simple
+    // approach and handle them by setting pessimistic assumptions here which
+    // will be used if a function calls itself (directly or indirectly).  These
+    // will get overwritten by visit_node() for non-recursive cases.
+
+    p->possible_signals = -1; // Assume it could signal t or f.
+
+    visit_node(a, p);
+}
+
 extern void read_program(struct analyser * a) {
     read_program_(a, -1);
     {
@@ -1653,51 +1941,63 @@ extern void read_program(struct analyser * a) {
         }
     }
 
-    if (a->tokeniser->error_count == 0) {
-        struct name * q = a->names;
-        struct name ** ptr = &(a->names);
-        while (q) {
-            if (!q->referenced) {
+    // Skip name warning checks if there are errors.
+    if (a->tokeniser->error_count)
+        return;
+
+    for (struct name * n = a->names; n; n = n->next) {
+        if (n->type == t_external) {
+            visit_routine(a, n);
+        }
+    }
+
+    struct name * q = a->names;
+    struct name ** ptr = &(a->names);
+    while (q) {
+        if (!q->referenced) {
+            q->s[SIZE(q->s)] = 0;
+            fprintf(stderr, "%s:%d: warning: %s '%s' ",
+                    a->tokeniser->file,
+                    q->declaration_line_number,
+                    name_of_name_type(q->type),
+                    q->s);
+            if (q->type == t_routine ||
+                q->type == t_external ||
+                q->type == t_grouping) {
+                fprintf(stderr, "declared but not defined\n");
+            } else {
+                fprintf(stderr, "defined but not used\n");
+            }
+            q = q->next;
+            *ptr = q;
+            continue;
+        }
+
+        if (q->type == t_routine || q->type == t_grouping) {
+            /* It's OK to define a grouping but only use it to define other
+             * groupings.
+             */
+            if (!q->used && !q->used_in_definition) {
+                int line_num;
+                if (q->type == t_routine) {
+                    line_num = q->definition->line_number;
+                } else {
+                    line_num = q->grouping->line_number;
+                }
                 q->s[SIZE(q->s)] = 0;
-                fprintf(stderr, "%s:%d: warning: %s '%s' ",
+                fprintf(stderr, "%s:%d: warning: %s '%s' defined but not used\n",
                         a->tokeniser->file,
-                        q->declaration_line_number,
+                        line_num,
                         name_of_name_type(q->type),
                         q->s);
-                if (q->type == t_routine ||
-                    q->type == t_external ||
-                    q->type == t_grouping) {
-                    fprintf(stderr, "declared but not defined\n");
-                } else {
-                    fprintf(stderr, "defined but not used\n");
-                }
                 q = q->next;
                 *ptr = q;
                 continue;
-            } else if (q->type == t_routine || q->type == t_grouping) {
-                /* It's OK to define a grouping but only use it to define other
-                 * groupings.
-                 */
-                if (!q->used && !q->used_in_definition) {
-                    int line_num;
-                    if (q->type == t_routine) {
-                        line_num = q->definition->line_number;
-                    } else {
-                        line_num = q->grouping->line_number;
-                    }
-                    q->s[SIZE(q->s)] = 0;
-                    fprintf(stderr, "%s:%d: warning: %s '%s' defined but not used\n",
-                            a->tokeniser->file,
-                            line_num,
-                            name_of_name_type(q->type),
-                            q->s);
-                    q = q->next;
-                    *ptr = q;
-                    continue;
-                }
-            } else if (q->type == t_external) {
-                /* Unused is OK. */
-            } else if (!q->initialised) {
+            }
+        }
+
+        if (q->type < t_routine) {
+            if (!q->initialised) {
                 q->s[SIZE(q->s)] = 0;
                 fprintf(stderr, "%s:%d: warning: %s '%s' is never initialised\n",
                         a->tokeniser->file,
@@ -1716,19 +2016,62 @@ extern void read_program(struct analyser * a) {
                 *ptr = q;
                 continue;
             }
-            ptr = &(q->next);
-            q = q->next;
         }
 
-        {
-            /* Now we've eliminated variables whose values are never used we
-             * can number the variables, which is used by some generators.
-             */
-            int * name_count = a->name_count;
-            struct name * n;
-            for (n = a->names; n; n = n->next) {
-                n->count = name_count[n->type]++;
+        if (q->count == -1) {
+            // Used but use is not reachable by calling any externals so
+            // suppress all code generation for this name.
+            //
+            // We only issue a warning about unreachability for routines here
+            // to avoid excess diagnostics, since other types must be used in a
+            // routine which is not reachable (or will have been warned about as
+            // unused by the check above).
+            if (q->type == t_routine) {
+                q->s[SIZE(q->s)] = 0;
+                fprintf(stderr, "%s:%d: warning: %s '%s' not reachable from any externals\n",
+                        a->tokeniser->file,
+                        q->declaration_line_number,
+                        name_of_name_type(q->type),
+                        q->s);
+                remove_unreachable_routine(a, q);
             }
+            // Avoid generating code for groupings only used in unreachable
+            // routines.
+            q->used = false;
+            q = q->next;
+            *ptr = q;
+            continue;
+        }
+
+        ptr = &(q->next);
+        q = q->next;
+    }
+
+    /* Now we've eliminated variables whose values are never used and
+     * names which are unreachable we can number the names, which is
+     * used by some generators.
+     */
+    int * name_count = a->name_count;
+    for (struct name * n = a->names; n; n = n->next) {
+        n->count = name_count[n->type]++;
+    }
+
+    // Remove amongs which are in unreachable routines from the list
+    // and number the others.
+    {
+        int among_count = 0;
+        struct among ** a_ptr = &(a->amongs);
+        while (*a_ptr) {
+            struct among * x = *a_ptr;
+            if (!x->used) {
+                *a_ptr = x->next;
+                continue;
+            }
+
+            x->number = among_count++;
+            if (x->function_count > 0) ++a->among_with_function_count;
+
+            a_ptr = &(x->next);
         }
     }
 }
@@ -1741,7 +2084,6 @@ extern struct analyser * create_analyser(struct tokeniser * t) {
     a->literalstrings = NULL;
     a->program = NULL;
     a->amongs = NULL;
-    a->among_count = 0;
     a->among_with_function_count = 0;
     a->groupings = NULL;
     a->mode = m_forward;

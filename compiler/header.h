@@ -56,6 +56,7 @@ extern byte * str_data(const struct str * str);
 extern int str_len(const struct str * str);
 extern int str_back(const struct str *str);
 extern void str_pop(const struct str *str);
+extern void str_pop_n(const struct str *str, int n);
 extern void output_str(FILE * outfile, struct str * str);
 
 extern int get_utf8(const symbol * p, int * slot);
@@ -130,6 +131,7 @@ enum token_codes {
     c_gopast_grouping,
     c_goto_non,
     c_gopast_non,
+    c_not_booltest,
 
     NUM_TOKEN_CODES
 };
@@ -207,7 +209,10 @@ struct name {
     byte initialised;           /* (For variables) is it ever initialised? */
     byte used_in_definition;    /* (grouping) used in grouping definition? */
     struct node * definition;   /* for routines, externals */
-    int count;                  /* 0, 1, 2 for each type */
+    // Initialised to -1; set to -2 if reachable from an external.
+    // Reachable names are then numbered 0, 1, 2, ... with separate numbering
+    // per type.
+    int count;
     struct grouping * grouping; /* for grouping names */
     struct node * used;         /* First use, or NULL if not used */
     struct name * local_to;     /* Local to one routine/external */
@@ -237,8 +242,9 @@ struct among {
     int command_count;        /* in this among (includes "no command" entries) */
     int nocommand_count;      /* number of "no command" entries in this among */
     int function_count;       /* in this among */
-    int amongvar_needed;      /* do we need to set among_var? */
-    int always_matches;       /* will this among always match? */
+    byte amongvar_needed;     /* do we need to set among_var? */
+    byte always_matches;      /* will this among always match? */
+    byte used;                /* is this among in reachable code? */
     int shortest_size;        /* smallest non-zero string length in this among */
     struct node * substring;  /* i.e. substring ... among ( ... ) */
     struct node ** commands;  /* array with command_count entries */
@@ -268,6 +274,10 @@ struct node {
     // Unicode mode (e.g. maxint, sizeof '{U+0246}') - some warnings which
     // depend on a constant AEs value should only fire for the first set.
     byte fixed_constant;
+    // Return 0 for always f.
+    // Return 1 for always t.
+    // Return -1 for don't know (or can raise t or f).
+    signed char possible_signals;
     struct node * AE;
     struct name * name;
     symbol * literalstring;
@@ -308,7 +318,6 @@ struct analyser {
     int name_count[t_size];   /* name_count[i] counts the number of names of type i */
     struct among * amongs;
     struct among * amongs_end;
-    int among_count;
     int amongvar_needed;      /* used in reading routine definitions */
     int among_with_function_count; /* number of amongs with functions */
     struct grouping * groupings;
@@ -357,8 +366,6 @@ struct generator {
     const char * S[10];  /* strings */
     byte * B[10];        /* byte blocks */
     int I[10];           /* integers */
-    struct name * V[5];  /* variables */
-    symbol * L[5];       /* literals, used in formatted write */
 
     int line_count;      /* counts number of lines output */
     int line_labelled;   /* in ISO C, will need extra ';' if it is a block end */
@@ -420,10 +427,6 @@ extern void write_start_comment(struct generator * g,
 
 extern int K_needed(struct generator * g, struct node * p);
 extern int repeat_restore(struct generator * g, struct node * p);
-extern int check_possible_signals_list(struct generator * g,
-                                       struct node * p,
-                                       int type,
-                                       int call_depth);
 
 /* Generator for C code. */
 extern void generate_program_c(struct generator * g);
