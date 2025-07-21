@@ -1,6 +1,4 @@
-up to: f16d578ca0b8875b812ec33d30ebec56144239c1
-
-Snowball 2.3.0 (2025-0?-??)
+Snowball 3.0.0 (2025-05-08)
 ===========================
 
 Ada
@@ -78,7 +76,7 @@ C/C++
 
   + Store index delta for among substring_i field.  This makes trying
     substrings after a failed match slightly faster because we can just add
-    the offset to the pointer to the current elemtent which we already have.
+    the offset to the pointer we already have to the current element.
 
 * Code quality:
 
@@ -172,7 +170,11 @@ Javascript
 
 * Other changes:
 
-  + Add start of ESM support.  See #183, reported by Lionel Rowe.
+  + The Javascript runner is now specified by make variable `JSRUN` instead
+    of `NODE` (since node is just one JS implementation).  The default value
+    is now `node` instead of `nodejs` (older Debian and Ubuntu packages used
+    `/usr/bin/nodejs` because `/usr/bin/node` was already in use by a
+    completely different package, but that has since changed).
 
 Pascal
 ------
@@ -213,6 +215,13 @@ Python
     avoids a `getattr()` call each time an among wants to call a routine.  This
     doesn't seem to make a measurable speed difference, but it's cleaner and
     avoids problems with name mangling.  Suggested by David Corbett in #217.
+
+  + Simplify code generated for `loop`.  If the iteration count is constant and
+    at most 4 then iterate over a tuple which microbenchmarking shows is
+    faster.  The only current uses of loop in the shipped stemmers are `loop 2`
+    so benefit from this.  Otherwise we now use `range(AE)` instead of
+    `range (AE, 0, -1)` (the actual value of the loop variable is never
+    used so only the number of iterations matter).
 
 * Bug fixes:
 
@@ -298,19 +307,42 @@ Behavioural changes to existing algorithms
   contain other accented characters and it seems better for the stemmer to
   handle such words the same way regardless of the encoding in use.
 
+* English: Replace '-ogist' with '-og' to conflate "geologist" and "geology", etc.
+  Suggested by Marc Schipperheijn on snowball-discuss.
+
 * English: Add extra condition to undoubling.  We no longer undouble if the
   double consonant is preceded by exactly "a", "e" or "o" to avoid conflating
   "add"/"ad", "egg"/"eg", "off"/"of", etc.  Fixes #182, reported by Ed Page.
 
-* English: Add 'evening' to exception2.  Reported by Ann B on snowball-discuss
-  back in 2017.
+* English: Avoid conflating 'emerge' and 'emergency'.  Reported by Frederick Ross
+  on snowball-discuss.
+
+* English: Avoid conflating 'evening' and 'even'.  Reported by Ann B on
+  snowball-discuss.
+
+* English: Avoid conflating 'lateral' and 'later'.  Reported by Steve Tolkin on
+  snowball-discuss.
+
+* English: Avoid conflating 'organ', 'organic' and 'organize'.
+
+* English: Avoid conflating 'past' and 'paste'.  Reported by Sonny on
+  snowball-discuss.
+
+* English: Avoid conflating 'universe', 'universal' and 'university'.  Reported
+  by Clem Wang on snowball-discuss.
+
+* English: Handle -eed and -ing exceptions in their respective rules.
+  This avoids the overhead of checking for them for the majority of
+  words which don't end -eed or -ing.  It also allows us to easily handle
+  vying->vie and hying->hie at basically no extra cost.  Reduces the time to
+  stem all words in our English word list by nearly 2%.
 
 * French: Remove elisions as first step.  See #187.  Originally reported by
   Paul Rudin and kelson42.
 
 * French: Remove -aise and -aises so for example, "française" and "françaises"
-  are now conflated with "français".  Fixes #209, originally reported by
-  ririsoft.
+  are now conflated with "français".  Fixes #209.  Originally reported by
+  ririsoft and Fred Fung.
 
 * French: Avoid incorrect conflation of `mauvais` (bad) with `mauve` (mauve,
   mallow or seagull); avoid conflating `mal` with `malais`, `pal` with
@@ -377,7 +409,11 @@ Behavioural changes to existing algorithms
   text was written using the visually similar "cedilla" diacritic on these
   letters instead ("ş" and "ţ").  Previously our stemmer only recognised the
   latter.  Now it maps the cedilla forms to "comma below" as a first step.
-  Patch from Rober Muir.
+  Patch from Robert Muir.
+
+* Spanish: Handle -acion like -ación and -ucion like -ución.  It's apparently
+  common to miss off accents in Spanish, and there are examples in our test
+  vocabulary that these change helps.  Proposed by Damian Janowski.
 
 * Swedish: Replace suffix "öst" with "ös" when preceded by any of 'iklnprtuv'
   rather than just 'l'.  The new rule only requires the "öst" to be in R1
@@ -423,6 +459,8 @@ Optimisations to existing algorithms
 
 * Lithuanian: Remove redundant R1 check.
 
+* Nepali: Eliminate redundant check_category_2 routine.
+
 * Tamil: Optimise by using `among` instead of long `or` chains.  The generated
   C version now takes 43% less time to processes the test vocabulary.
 
@@ -433,12 +471,23 @@ Optimisations to existing algorithms
 
 * Tamil: Make `fix_va_start` simpler and faster.
 
+* Tamil: Localise use of `found_a_match` flag.
+
 * Tamil: Eliminate pointless flag changes.
 
 * Turkish: Minor optimisations.
 
 Code clarity improvements to existing algorithms
 ------------------------------------------------
+
+* Stop noting dates changes were made in comments in the code - we now maintain
+  a changelog in each algorithm's description page on the website (and the
+  version control history provides a finer grained view).
+
+* Always use `insert` instead of `<+` as the named command seems clearer.
+
+* English: Add comments documenting motivating examples for all exceptional
+  cases.
 
 * Lithuanian: Change to recommended latin stringdef codes.  Using common codes
   makes it easier to work across algorithms, but they are more mnemonic so also
@@ -455,6 +504,8 @@ Compiler
 --------
 
 * Generic code generation improvements:
+
+  + Show Snowball source leafname in "generated" comment at start of files.
 
   + Add generic reachability tracking machinery.  This facilitates various new
     optimisations, so far the following have been implemented:
@@ -539,6 +590,33 @@ Compiler
   already emitting a suitable error but would then segfault.
 
 * Emit error for redefinition of a grouping.
+
+* Improve errors for `define` of an undeclared name.  We already peek at the
+  next token to decide whether to try to parse as a routine or grouping.
+  Previously we parsed as a routine if it was `as`, and a grouping otherwise,
+  but routine definitions are more common and a grouping can only start with
+  a literal string or a name, so now we assume a routine definition with a
+  missing `as` if the next token isn't valid for either.
+
+* Suppress duplicate (or even triplicate) "unexpected" errors for the same
+  token when the compiler tried to recover from the error by adjusting the
+  parse stare and marking the token to be reparsed, but the same token then
+  failed to parse in the new state.
+
+* Fix NULL pointer dereference if an undefined grouping is used in the
+  definition of another grouping.
+
+* Fix mangled error for `set` or `unset` on a non-boolean:
+
+  test.sbl:2: nameInvalid type 98 in name_of_type()
+
+* Emit warning if `=>` is used.  The documentation of how it works doesn't
+  match the implementation, and it seems it has only ever been used in the
+  Schinke stemmer implementation (which assumes the implemented behaviour).
+  We've updated the Schinke implementation to avoid it.  If you're using it
+  in your own Snowball code please let us know.
+
+* Improve errors for unterminated string literals.
 
 * Fix NULL pointer dereference on invalid code such as `$x = $y`.
 
@@ -719,8 +797,12 @@ Python
 
   Noted by David Corbett.
 
-Code Quality Improvements
+Code quality Improvements
 -------------------------
+
+* C/C++: Generate INT_MIN and INT_MAX directly, including <limits.h> from
+  the generated C file if necessary, and remove the MAXINT and MININT macros
+  from runtime/header.h.
 
 * C#: An `among` without functions is now generated as `static` and groupings
   are now generated as constant.  Patches from James Turner in #146 and #147.
@@ -732,6 +814,18 @@ Code generation improvements
 
   + Constant numeric subexpressions and constant numeric tests are now
     evaluated at Snowball compile time.
+
+  + Simplify the following degnerate `loop` and `atleast` constructs where
+    N is a compile-time constant:
+
+    - loop N C where N <= 0 is a no-op.
+
+    - loop N C where N == 1 is just C.
+
+    - atleast N C where N <= 0 is just repeat C.
+
+    If the value of N doesn't depend on the current target language, platform
+    or Unicode settings then we also issue a warning.
 
 Behavioural changes to existing algorithms
 ------------------------------------------

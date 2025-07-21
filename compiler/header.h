@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-#define SNOWBALL_VERSION "2.2.0"
+#define SNOWBALL_VERSION "3.0.0"
 
 typedef unsigned char byte;
 typedef unsigned short symbol;
@@ -165,6 +165,7 @@ struct tokeniser {
     int token;
     int previous_token;
     byte token_held;
+    byte token_reported_as_unexpected;
     enc encoding;
 
     int omission;
@@ -183,6 +184,8 @@ struct tokeniser {
 extern byte * get_input(const char * filename);
 extern struct tokeniser * create_tokeniser(byte * b, char * file);
 extern int read_token(struct tokeniser * t);
+extern int peek_token(struct tokeniser * t);
+#define hold_token(T) ((T)->token_held = true)
 extern const char * name_of_token(int code);
 extern void disable_token(struct tokeniser * t, int code);
 extern void close_tokeniser(struct tokeniser * t);
@@ -196,16 +199,16 @@ struct node;
 struct name {
     struct name * next;
     byte * s;
-    int type;                   /* t_string etc */
-    int mode;                   /*    )_  for routines, externals */
-    struct node * definition;   /*    )                           */
-    int count;                  /* 0, 1, 2 for each type */
-    struct grouping * grouping; /* for grouping names */
+    byte type;                  /* t_string etc */
+    byte mode;                  /* for routines, externals (m_forward, etc) */
     byte referenced;
     byte used_in_among;         /* Function used in among? */
     byte value_used;            /* (For variables) is its value ever used? */
     byte initialised;           /* (For variables) is it ever initialised? */
     byte used_in_definition;    /* (grouping) used in grouping definition? */
+    struct node * definition;   /* for routines, externals */
+    int count;                  /* 0, 1, 2 for each type */
+    struct grouping * grouping; /* for grouping names */
     struct node * used;         /* First use, or NULL if not used */
     struct name * local_to;     /* Local to one routine/external */
     int declaration_line_number;/* Line number of declaration */
@@ -257,8 +260,14 @@ struct node {
     struct node * aux;     /* used in setlimit */
     struct among * among;  /* used in among */
     struct node * right;
-    int type;
-    int mode;
+    byte type;
+    byte mode;
+    // We want to distinguish constant AEs which have the same value everywhere
+    // (e.g. 42, 2+2, lenof '{U+0246}') from constant AEs which can have a
+    // different value depending on platform and/or target language and/or
+    // Unicode mode (e.g. maxint, sizeof '{U+0246}') - some warnings which
+    // depend on a constant AEs value should only fire for the first set.
+    byte fixed_constant;
     struct node * AE;
     struct name * name;
     symbol * literalstring;
@@ -292,7 +301,7 @@ struct analyser {
     struct node * nodes;
     struct name * names;
     struct literalstring * literalstrings;
-    int mode;
+    byte mode;
     byte modifyable;          /* false inside reverse(...) */
     struct node * program;
     struct node * program_end;
@@ -310,7 +319,11 @@ struct analyser {
 };
 
 enum analyser_modes {
-    m_forward = 0, m_backward
+    // m_unknown is used as the initial value for struct node's mode member.
+    // When a routine (or external) is used or defined we check the mode
+    // member matches, but for the first use/definition we see we want to
+    // instead set it to the mode of that use/definition.
+    m_forward = 0, m_backward, m_unknown
 };
 
 extern void print_program(struct analyser * a);

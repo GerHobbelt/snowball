@@ -2,7 +2,7 @@
 
 # After changing this, run `make update_version` to update various sources
 # which hard-code it.
-SNOWBALL_VERSION = 2.2.0
+SNOWBALL_VERSION = 3.0.0
 
 ifeq ($(OS),Windows_NT)
 EXEEXT = .exe
@@ -35,7 +35,7 @@ python_sample_dir = sample
 js_output_dir = js_out
 js_runtime_dir = javascript
 js_sample_dir = sample
-NODE ?= nodejs
+JSRUN ?= node
 JSTYPE ?= global
 
 cargo ?= cargo
@@ -332,7 +332,7 @@ $(go_src_dir)/%_stemmer.go: algorithms/%.sbl snowball$(EXEEXT)
 
 $(js_output_dir)/%-stemmer.js: algorithms/%.sbl snowball$(EXEEXT)
 	@mkdir -p $(js_output_dir)
-	./snowball $< -js="$(JSTYPE)" -o "$(js_output_dir)/$*-stemmer"
+	./snowball $< -js -o "$(js_output_dir)/$*-stemmer"
 
 $(js_output_dir)/base-stemmer.js: $(js_runtime_dir)/base-stemmer.js
 	@mkdir -p $(js_output_dir)
@@ -656,10 +656,10 @@ check_js_%: $(STEMMING_DATA)/%
 	@echo "Checking output of $* stemmer for JS"
 	@if test -f '$</voc.txt.gz' ; then \
 	  gzip -dc '$</voc.txt.gz' > tmp.in; \
-	  $(NODE) javascript/stemwords.js -l $* -i tmp.in -o tmp.txt; \
+	  $(JSRUN) javascript/stemwords.js -l $* -i tmp.in -o tmp.txt; \
 	  rm tmp.in; \
 	else \
-	  $(NODE) javascript/stemwords.js -l $* -i $</voc.txt -o tmp.txt; \
+	  $(JSRUN) javascript/stemwords.js -l $* -i $</voc.txt -o tmp.txt; \
 	fi
 	@if test -f '$</output.txt.gz' ; then \
 	  gzip -dc '$</output.txt.gz'|$(DIFF) -u - tmp.txt; \
