@@ -146,7 +146,6 @@ static void wsetl(struct generator * g, int n) {
     write_int(g, n);
     write_string(g, ">>");
     write_newline(g);
-    g->line_labelled = g->line_count;
 }
 
 static void write_failure(struct generator * g) {
@@ -1660,7 +1659,6 @@ static void generate_grouping_table(struct generator * g, struct grouping * q) {
     int size = (range + 7)/ 8;  /* assume 8 bits per symbol */
     symbol * b = q->b;
     symbol * map = create_b(size);
-    int need_comma = 0;
 
     for (int i = 0; i < size; i++) map[i] = 0;
 
@@ -1672,20 +1670,15 @@ static void generate_grouping_table(struct generator * g, struct grouping * q) {
     w(g, " : constant Grouping_Array (0 .. ~I0) := (~N~+~M");
     for (int i = 0; i < size; i++) {
         unsigned char m = map[i];
-        if (i != 0) {
-            w(g, ",~N~M");
-            need_comma = 0;
-        }
+        if (i) w(g, ",~N~M");
         for (int j = 0; j < 8; j++) {
-            if (need_comma)
-                w(g, ", ");
+            if (j) w(g, ", ");
 
             if (m & (1 << j)) {
                 w(g, "True");
             } else {
                 w(g, "False");
             }
-            need_comma = 1;
         }
     }
     w(g, "~N~-~M);~N");
