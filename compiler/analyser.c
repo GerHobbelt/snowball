@@ -38,26 +38,27 @@ static struct node * C_style(struct analyser * a, const char * s, int token);
 
 static void print_node_(struct node * p, int n, const char * s) {
 
-    int i;
-    for (i = 0; i < n; i++) fputs(i == n - 1 ? s : "  ", stdout);
-    printf("%s ", name_of_token(p->type));
-    if (p->name) report_s(stdout, p->name->s);
+    printf("%*s%s", n * 2, s, name_of_token(p->type));
+    if (p->name) {
+        putchar(' ');
+        report_s(stdout, p->name->s);
+    }
     if (p->literalstring) {
-        printf("'");
+        printf(" '");
         report_b(stdout, p->literalstring);
         printf("'");
     } else if (p->type == c_number) {
-        printf("%d", p->number);
+        printf(" %d", p->number);
     }
     printf("\n");
     if (p->AE) print_node_(p->AE, n+1, "# ");
-    if (p->left) print_node_(p->left, n+1, "  ");
+    if (p->left) print_node_(p->left, n+1, "");
     if (p->aux) print_node_(p->aux, n+1, "@ ");
-    if (p->right) print_node_(p->right, n, "  ");
+    if (p->right) print_node_(p->right, n, "");
 }
 
 extern void print_program(struct analyser * a) {
-    print_node_(a->program, 0, "  ");
+    print_node_(a->program, 0, "");
 }
 
 static struct node * new_node(struct analyser * a, int type) {
@@ -480,7 +481,7 @@ static struct node * read_AE(struct analyser * a, struct name * assigned_to, int
                 case c_divide:
                     if (r->number == 0) {
                         fprintf(stderr, "%s:%d: Division by zero\n",
-				t->file, t->line_number);
+                                t->file, t->line_number);
                         exit(1);
                     }
                     q->number = p->number / r->number;
@@ -565,7 +566,7 @@ static struct node * read_AE(struct analyser * a, struct name * assigned_to, int
                     // p / 0 is an error!
                     if (r->type == c_number && r->number == 0) {
                         fprintf(stderr, "%s:%d: Division by zero\n",
-				t->file, t->line_number);
+                                t->file, t->line_number);
                         exit(1);
                     }
                     break;
@@ -755,6 +756,7 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
     if (a->amongs == NULL) a->amongs = x; else a->amongs_end->next = x;
     a->amongs_end = x;
     x->next = NULL;
+    x->node = p;
     x->b = v;
     x->number = a->among_count++;
     x->function_count = 0;
@@ -827,7 +829,8 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
     x->command_count = result - 1;
     {
         NEWVEC(node*, commands, x->command_count);
-        memset(commands, 0, x->command_count * sizeof(struct node*));
+        for (int i = 0; i != x->command_count; ++i)
+            commands[i] = NULL;
         for (w0 = v; w0 < w1; w0++) {
             if (w0->result > 0) {
                 /* result == -1 when there's no command. */
@@ -1058,7 +1061,18 @@ static struct node * read_C(struct analyser * a) {
             struct node * n = C_style(a, "A", token);
             // n->AE is NULL after a syntax error, e.g. `hop hop`.
             if (n->AE && n->AE->type == c_number) {
-                if (n->AE->number < 0) {
+                if (n->AE->number == 1) {
+                    // Convert `hop 1` to `next`.
+                    n->AE = NULL;
+                    n->type = c_next;
+                } else if (n->AE->number == 0) {
+                    fprintf(stderr,
+                            "%s:%d: warning: hop 0 is a no-op\n",
+                            a->tokeniser->file,
+                            n->AE->line_number);
+                    n->AE = NULL;
+                    n->type = c_true;
+                } else if (n->AE->number < 0) {
                     fprintf(stderr,
                             "%s:%d: warning: hop %d now signals f (as was "
                             "always documented) rather than moving the cursor "
@@ -1068,13 +1082,6 @@ static struct node * read_C(struct analyser * a) {
                             n->AE->number);
                     n->AE = NULL;
                     n->type = c_false;
-                } else if (n->AE->number == 0) {
-                    fprintf(stderr,
-                            "%s:%d: warning: hop 0 is a no-op\n",
-                            a->tokeniser->file,
-                            n->AE->line_number);
-                    n->AE = NULL;
-                    n->type = c_true;
                 }
             }
             return n;
@@ -1118,18 +1125,17 @@ static struct node * read_C(struct analyser * a) {
             return n;
         }
         case c_dollar: {
-            struct tokeniser * t = a->tokeniser;
             read_token(t);
             if (t->token == c_bra) {
                 /* Handle newer $(AE REL_OP AE) syntax. */
                 struct node * n = read_AE(a, NULL, 0);
                 read_token(t);
-                int token = t->token;
+                token = t->token;
                 switch (token) {
                     case c_assign:
                         count_error(a);
                         fprintf(stderr, "%s:%d: Expected relational operator (did you mean '=='?)\n",
-				t->file, t->line_number);
+                                t->file, t->line_number);
                         /* Assume it was == to try to avoid an error avalanche. */
                         token = c_eq;
                         /* FALLTHRU */
