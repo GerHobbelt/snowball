@@ -70,7 +70,7 @@ static void write_literal_string(struct generator * g, symbol * p) {
 }
 
 static void write_literal_char(struct generator * g, symbol ch) {
-    write_string(g, "u\"");
+    write_string(g, "\"");
     if (32 <= ch && ch < 0x590 && ch != 127) {
         if (ch == '"' || ch == '\\') write_char(g, '\\');
         // Python uses ENC_WIDECHARS so we need to convert.
@@ -363,8 +363,8 @@ static void generate_or(struct generator * g, struct node * p) {
         fprintf(stderr, "Error: \"or\" node without children nodes.");
         exit(1);
     }
+    int label = new_label(g);
     while (p->right != NULL) {
-        int label = new_label(g);
         g->failure_label = label;
         wsetlab_begin(g);
         generate(g, p);
@@ -603,22 +603,19 @@ static void generate_GO(struct generator * g, struct node * p, int style) {
 }
 
 static void generate_loop(struct generator * g, struct node * p) {
-    struct str * loopvar = vars_newname(g);
     write_comment(g, p);
-    g->B[0] = str_data(loopvar);
     if (p->AE->type == c_number && p->AE->number <= 4) {
         // Use a tuple instead of range() for small constant numbers of
         // iterations.
-        w(g, "~Mfor ~B0 in ");
+        w(g, "~Mfor _ in ");
         for (int i = p->AE->number; i > 0; --i) {
             w(g, "0");
             if (i > 1) w(g, ", ");
         }
         writef(g, ":~N", p);
     } else {
-        w(g, "~Mfor ~B0 in range(");
+        w(g, "~Mfor _ in range(");
         generate_AE(g, p->AE);
-        g->B[0] = str_data(loopvar);
         writef(g, "):~N", p);
     }
     writef(g, "~{", p);
@@ -626,7 +623,6 @@ static void generate_loop(struct generator * g, struct node * p) {
     generate(g, p->left);
 
     w(g, "~}");
-    str_delete(loopvar);
     g->unreachable = false;
 }
 
@@ -744,8 +740,7 @@ static void generate_hop(struct generator * g, struct node * p) {
 
 static void generate_delete(struct generator * g, struct node * p) {
     write_comment(g, p);
-    writef(g, "~Mif not self.slice_del():~N"
-              "~+~Mreturn False~N~-", p);
+    writef(g, "~Mself.slice_del()~N", p);
 }
 
 static void generate_tolimit(struct generator * g, struct node * p) {
@@ -780,9 +775,7 @@ static void generate_assignto(struct generator * g, struct node * p) {
 
 static void generate_sliceto(struct generator * g, struct node * p) {
     write_comment(g, p);
-    writef(g, "~M~V = self.slice_to()~N"
-              "~Mif ~V == '':~N"
-              "~+~Mreturn False~N~-", p);
+    writef(g, "~M~V = self.slice_to()~N", p);
 }
 
 static void generate_address(struct generator * g, struct node * p) {
@@ -822,10 +815,9 @@ static void generate_assignfrom(struct generator * g, struct node * p) {
 
 static void generate_slicefrom(struct generator * g, struct node * p) {
     write_comment(g, p);
-    w(g, "~Mif not self.slice_from(");
+    w(g, "~Mself.slice_from(");
     generate_address(g, p);
-    writef(g, "):~N"
-              "~+~Mreturn False~N~-", p);
+    writef(g, ")~N", p);
 }
 
 static void generate_setlimit(struct generator * g, struct node * p) {
@@ -1070,6 +1062,7 @@ static void generate_substring(struct generator * g, struct node * p) {
     } else if (x->always_matches) {
         writef(g, "~Mself.find_among~S0(~n.a_~I0)~N", p);
     } else if (x->command_count == 0 &&
+               g->failure_label == x_return &&
                x->node->right && x->node->right->type == c_functionend) {
         writef(g, "~Mreturn self.find_among~S0(~n.a_~I0) != 0~N", p);
         x->node->right = NULL;
@@ -1294,10 +1287,26 @@ static void generate_amongs(struct generator * g) {
 static void generate_grouping_table(struct generator * g, struct grouping * q) {
     symbol * b = q->b;
 
-    // We could use frozenset, but it seems slightly slower to construct which
-    // adds to startup time.
     write_margin(g);
     write_varname(g, q->name);
+    if (SIZE(b) <= 3) {
+        // The `s in g` test used in base-stemmer.py works whether g is a
+        // set or a string.
+        //
+        // The generated code for the string is smaller, faster to construct,
+        // and (for a small grouping) seems to be if anything fractionally
+        // faster to test.
+        //
+        // FIXME: The threshold seems about right for Python 3.13 but we should
+        // recheck periodically.
+        write_string(g, " = ");
+        write_literal_string(g, b);
+        w(g, "~N");
+        return;
+    }
+
+    // We could use frozenset, but it seems slightly slower to construct which
+    // adds to startup time.
     write_string(g, " = {");
     for (int i = 0; i < SIZE(b); i++) {
         if (i > 0) w(g, ", ");
