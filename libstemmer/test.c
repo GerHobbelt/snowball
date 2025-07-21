@@ -25,7 +25,7 @@ int main(void) {
     s = sb_stemmer_new("en", "UTF_8");
     if (s == 0) error("TEST FAIL: zero return for recognised language");
     unstemmed = "recognised";
-    stemmed = sb_stemmer_stem(s, (const sb_symbol *)unstemmed, 10);
+    stemmed = (const char *)sb_stemmer_stem(s, (const sb_symbol *)unstemmed, 10);
     printf("%s -> %s\n", unstemmed, stemmed);
     if (sb_stemmer_length(s) != strlen(stemmed))
         error("TEST FAIL: length not correct");
