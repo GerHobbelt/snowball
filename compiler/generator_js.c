@@ -841,7 +841,7 @@ static void generate_assignfrom(struct generator * g, struct node * p) {
 
     write_comment(g, p);
     if (keep_c) {
-        w(g, "~{~Mconst /** number */ c = base.cursor;~N");
+        w(g, "~{~Mconst /** number */ c = this.cursor;~N");
         if (p->mode == m_forward) {
             writef(g, "~Mthis.insert(c, this.limit, ", p);
         } else {
@@ -956,8 +956,8 @@ static void generate_dollar(struct generator * g, struct node * p) {
     struct str * savevar = vars_newname(g);
     g->B[0] = str_data(savevar);
     writef(g, "~{~N"
-              "~Mlet /** !Object */ ~B0 = new ~P();~N", p);
-    writef(g, "~M~B0.copy_from(base);~N", p);
+              "~Mconst /** !Object */ ~B0 = new ~P();~N", p);
+    writef(g, "~M~B0.copy_from(this);~N", p);
 
     ++g->copy_from_count;
     str_assign(g->failure_str, "this.copy_from(");
@@ -1459,7 +1459,8 @@ extern void generate_program_js(struct generator * g) {
 
     // We generate deno-lint-ignore which may not all be used.
     // Expressions in conditionals may be constant.
-    w(g, "// deno-lint-ignore-file ban-unused-ignore no-constant-condition~N~N");
+    // Empty blocks may be generated in some cases.
+    w(g, "// deno-lint-ignore-file ban-unused-ignore no-constant-condition no-empty~N~N");
 
     generate_amongs(g);
     generate_groupings(g);
