@@ -131,6 +131,21 @@ static int check_token(struct analyser * a, int code) {
     return true;
 }
 
+static void hold_token_if_toplevel(struct tokeniser * t) {
+    // Hold token if it starts a top-level construct.
+    switch (t->token) {
+        case c_backwardmode:
+        case c_booleans:
+        case c_define:
+        case c_externals:
+        case c_groupings:
+        case c_integers:
+        case c_routines:
+        case c_strings:
+            hold_token(t);
+    }
+}
+
 static int get_token(struct analyser * a, int code) {
     struct tokeniser * t = a->tokeniser;
     read_token(t);
@@ -156,7 +171,8 @@ static struct name * find_name(struct analyser * a) {
     struct name * p = look_for_name(a);
     if (p == NULL) {
         report_error_location(a);
-        fprintf(stderr, "'%s' undeclared\n", a->tokeniser->s);
+        byte * s = a->tokeniser->s;
+        fprintf(stderr, "'%.*s' undeclared\n", SIZE(s), s);
     }
     return p;
 }
@@ -210,7 +226,7 @@ static void read_names(struct analyser * a, int type) {
 handle_as_name:
                 if (look_for_name(a) != NULL) {
                     report_error_location(a);
-                    fprintf(stderr, "'%s' re-declared\n", t->s);
+                    fprintf(stderr, "'%.*s' re-declared\n", SIZE(t->s), t->s);
                 } else {
                     NEW(name, p);
                     p->s = copy_s(t->s);
@@ -1423,8 +1439,8 @@ static struct node * read_C(struct analyser * a) {
                             break;
                         case t_integer:
                             report_error_location(a);
-                            fprintf(stderr, "integer name '%s' misplaced\n",
-                                    t->s);
+                            fprintf(stderr, "integer name '%.*s' misplaced\n",
+                                    SIZE(t->s), t->s);
                             break;
                         case t_string:
                             q->value_used = true;
@@ -1539,7 +1555,7 @@ static void read_define_grouping(struct analyser * a, struct name * q) {
         if (q) {
             if (q->grouping != NULL) {
                 report_error_location(a);
-                fprintf(stderr, "'%s' redefined\n", t->s);
+                fprintf(stderr, "'%.*s' redefined\n", SIZE(t->s), t->s);
                 FREE(q->grouping);
             }
             q->grouping = p;
@@ -1574,7 +1590,7 @@ static void read_define_grouping(struct analyser * a, struct name * q) {
                     break;
                 default:
                     unexpected_token_error(a, "grouping definition");
-                    hold_token(t);
+                    hold_token_if_toplevel(t);
                     // Don't report an error for an empty grouping as well.
                     (void)finalise_grouping(p);
                     return;
