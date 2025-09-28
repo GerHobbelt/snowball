@@ -1124,6 +1124,7 @@ static void generate_slicefrom(struct generator * g, struct node * p) {
 static void generate_setlimit(struct generator * g, struct node * p) {
     struct str * varname = vars_newname(g);
     write_comment(g, p);
+    int extra_block = false;
     if (p->left && p->left->type == c_tomark) {
         /* Special case for:
          *
@@ -1163,6 +1164,8 @@ static void generate_setlimit(struct generator * g, struct node * p) {
             str_append_ch(g->failure_str, ';');
         }
     } else {
+        write_block_start(g);
+        extra_block = true;
         struct str * savevar = vars_newname(g);
         write_savecursor(g, p, savevar);
         generate(g, p->left);
@@ -1192,6 +1195,9 @@ static void generate_setlimit(struct generator * g, struct node * p) {
     write_str(g, g->failure_str);
     w(g, "~N"
       "~}");
+    if (extra_block) {
+        write_block_end(g);
+    }
     str_delete(varname);
 }
 
@@ -1685,6 +1691,12 @@ void write_start_comment(struct generator * g,
 }
 
 static void generate_head(struct generator * g) {
+    if (g->analyser->int_limits_used) {
+        w(g, "#include <limits.h>~N");
+    }
+    if (g->analyser->debug_used) {
+        w(g, "#define SNOWBALL_DEBUG_COMMAND_USED~N");
+    }
     w(g, "#include \"");
     if (g->options->runtime_path) {
         write_string(g, g->options->runtime_path);
@@ -1902,9 +1914,6 @@ extern void generate_program_c(struct generator * g) {
     g->outbuf = str_new();
     g->failure_str = str_new();
     write_start_comment(g, "/* ", " */");
-    if (g->analyser->int_limits_used) {
-        w(g, "#include <limits.h>~N");
-    }
     generate_head(g);
     generate_routine_headers(g);
     w(g, "#ifdef __cplusplus~N"
@@ -1958,6 +1967,8 @@ extern struct generator * create_generator(struct analyser * a, struct options *
 #ifndef DISABLE_PYTHON
     g->max_label = 0;
 #endif
+    g->java_import_arrays = false;
+    g->java_import_chararraysequence = false;
     return g;
 }
 
