@@ -487,7 +487,7 @@ static int K_needed_(struct node * p, int call_depth) {
                  * recurse until we run out of stack for pathological cases.
                  */
                 if (call_depth >= 100) return true;
-                if (K_needed_(p->name->definition, call_depth + 1))
+                if (K_needed_(p->name->definition->left, call_depth + 1))
                     return true;
                 break;
 
@@ -548,7 +548,7 @@ static int repeat_score(struct generator * g, struct node * p, int call_depth) {
                 if (call_depth >= 100) {
                     return 2;
                 }
-                score += repeat_score(g, p->name->definition, call_depth + 1);
+                score += repeat_score(g, p->name->definition->left, call_depth + 1);
                 if (score >= 2)
                     return score;
                 break;
@@ -667,7 +667,11 @@ static void generate_or(struct generator * g, struct node * p) {
 
     generate(g, p);
 
-    w(g, "~-~M} while (0);~N");
+    write_block_end(g);
+    if (str_back(g->outbuf) == '\n') {
+        str_pop(g->outbuf);
+    }
+    w(g, " while (0);~N");
     if (savevar) {
         str_delete(savevar);
     }
