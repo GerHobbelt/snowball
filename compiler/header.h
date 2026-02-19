@@ -11,8 +11,12 @@ typedef unsigned short symbol;
 #define MALLOC check_malloc
 #define FREE check_free
 
-#define NEW(type, p) struct type * p = (struct type *) MALLOC(sizeof(struct type))
-#define NEWVEC(type, p, n) struct type * p = (struct type *) MALLOC(sizeof(struct type) * (n))
+// Declare variable `V` of type `struct TYPE *` and dynamically allocate it.
+// We exit on allocation failure so `V` is always non-NULL.
+#define NEW(TYPE, V) struct TYPE * V = (struct TYPE *) MALLOC(sizeof(struct TYPE))
+
+// Similar to NEW() but allocates an array of N objects of type `struct TYPE *`.
+#define NEWVEC(TYPE, V, N) struct TYPE * V = (struct TYPE *) MALLOC(sizeof(struct TYPE) * (N))
 
 #define SIZE(p)     ((int *)(p))[-1]
 #define CAPACITY(p) ((int *)(p))[-2]
@@ -63,7 +67,7 @@ extern void output_str(FILE * outfile, struct str * str);
 extern int get_utf8(const symbol * p, int * slot);
 extern int put_utf8(int ch, symbol * p);
 
-typedef enum { ENC_SINGLEBYTE, ENC_UTF8, ENC_WIDECHARS } enc;
+typedef enum { ENC_SINGLEBYTE = 0, ENC_UTF8, ENC_WIDECHARS } enc;
 
 /* stringdef name and value */
 struct m_pair {
@@ -138,7 +142,7 @@ enum token_codes {
 };
 
 enum uplus_modes {
-    UPLUS_NONE,
+    UPLUS_NONE = 0,
     UPLUS_DEFINED,
     UPLUS_UNICODE
 };
@@ -212,6 +216,7 @@ struct name {
     byte initialised;           /* (For variables) is it ever initialised? */
     byte used_in_definition;    /* (grouping) used in grouping definition? */
     byte amongvar_needed;       /* for routines, externals */
+    byte among_with_function;   /* (routines/externals) contains among with func */
     struct node * definition;   /* (routines/externals) c_define node */
     int used_in_among;          /* (routines/externals) Count of uses in amongs */
     // Initialised to -1; set to -2 if reachable from an external.
@@ -359,9 +364,7 @@ struct generator {
     struct str * outbuf;       /* temporary str to store output */
     struct str * declarations; /* str storing variable declarations */
     int next_label;
-#ifndef DISABLE_PYTHON
-    int max_label;
-#endif
+    int max_label;             /* Only used by Python */
     int margin;
 
     /* Target language code to execute in case of failure. */
@@ -400,7 +403,20 @@ struct options {
     byte syntax_tree;
     byte comments;
     enc encoding;
-    enum { LANG_JAVA, LANG_C, LANG_CPLUSPLUS, LANG_CSHARP, LANG_PASCAL, LANG_PHP, LANG_PYTHON, LANG_JAVASCRIPT, LANG_RUST, LANG_GO, LANG_ADA } make_lang;
+    enum {
+        LANG_C = 0, // We generate C by default.
+        LANG_ADA,
+        LANG_CPLUSPLUS,
+        LANG_CSHARP,
+        LANG_DART,
+        LANG_GO,
+        LANG_JAVA,
+        LANG_JAVASCRIPT,
+        LANG_PASCAL,
+        LANG_PHP,
+        LANG_PYTHON,
+        LANG_RUST
+    } target_lang;
     const char * externals_prefix;
     const char * variables_prefix;
     const char * runtime_path;
@@ -429,7 +445,8 @@ extern void write_s(struct generator * g, const byte * b);
 extern void write_str(struct generator * g, struct str * str);
 extern void write_c_relop(struct generator * g, int relop);
 
-extern void write_comment_content(struct generator * g, struct node * p);
+extern void write_comment_content(struct generator * g, struct node * p,
+                                  const char * end);
 extern void write_generated_comment_content(struct generator * g);
 extern void write_start_comment(struct generator * g,
                                 const char * comment_start,
@@ -441,41 +458,26 @@ extern int repeat_restore(struct generator * g, struct node * p);
 /* Generator for C code. */
 extern void generate_program_c(struct generator * g);
 
-#ifndef DISABLE_JAVA
 /* Generator for Java code. */
 extern void generate_program_java(struct generator * g);
-#endif
 
-#ifndef DISABLE_CSHARP
+/* Generator for Dart code. */
+extern void generate_program_dart(struct generator * g);
+
 /* Generator for C# code. */
 extern void generate_program_csharp(struct generator * g);
-#endif
 
-#ifndef DISABLE_PASCAL
 extern void generate_program_pascal(struct generator * g);
-#endif
 
-#ifndef DISABLE_PHP
 extern void generate_program_php(struct generator * g);
-#endif
 
-#ifndef DISABLE_PYTHON
 /* Generator for Python code. */
 extern void generate_program_python(struct generator * g);
-#endif
 
-#ifndef DISABLE_JS
 extern void generate_program_js(struct generator * g);
-#endif
 
-#ifndef DISABLE_RUST
 extern void generate_program_rust(struct generator * g);
-#endif
 
-#ifndef DISABLE_GO
 extern void generate_program_go(struct generator * g);
-#endif
 
-#ifndef DISABLE_ADA
 extern void generate_program_ada(struct generator * g);
-#endif

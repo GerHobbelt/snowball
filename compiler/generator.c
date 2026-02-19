@@ -143,7 +143,93 @@ extern void write_c_relop(struct generator * g, int relop) {
     }
 }
 
-void write_comment_content(struct generator * g, struct node * p) {
+static void write_comment_literalstring(struct generator * g, const symbol *s,
+                                        const char * end) {
+    if (end) {
+        // Check if the literal string contains the target language end comment
+        // string.  Don't try to be clever here as real-world literal strings
+        // are unlikely to contain even partial matches.
+        int end_len = strlen(end);
+        if (end_len <= SIZE(s)) {
+            for (int i = 0; i <= SIZE(s) - end_len; ++i) {
+                for (int j = 0; j < end_len; ++j) {
+                    if (s[i + j] != end[j]) goto next_outer;
+                }
+                write_string(g, "<literal string>");
+                return;
+next_outer: ;
+            }
+        }
+    }
+    write_char(g, '\'');
+    for (int i = 0; i < SIZE(s); ++i) {
+        symbol c = s[i];
+        if (c == '\'' || c == '{') {
+            write_char(g, '{');
+            write_char(g, c);
+            write_char(g, '}');
+        } else if (c < 32 || c == 127) {
+            write_string(g, "{U+");
+            write_hex(g, c);
+            write_char(g, '}');
+        } else {
+            if (g->options->encoding == ENC_WIDECHARS) {
+                write_wchar_as_utf8(g, s[i]);
+            } else {
+                write_char(g, s[i]);
+            }
+        }
+    }
+    write_char(g, '\'');
+}
+
+static void write_comment_AE(struct generator * g, struct node * p) {
+    switch (p->type) {
+        case c_name:
+            write_s(g, p->name->s);
+            break;
+        case c_number:
+            write_int(g, p->number);
+            break;
+        case c_cursor:
+        case c_len:
+        case c_lenof:
+        case c_limit:
+        case c_maxint:
+        case c_minint:
+        case c_size:
+        case c_sizeof:
+            write_string(g, name_of_token(p->type));
+            if (p->name) {
+                write_char(g, ' ');
+                write_s(g, p->name->s);
+            }
+            break;
+        case c_neg:
+            write_char(g, '-');
+            write_comment_AE(g, p->right);
+            break;
+        case c_multiply:
+        case c_plus:
+        case c_minus:
+        case c_divide:
+            write_char(g, '(');
+            write_comment_AE(g, p->left);
+            write_char(g, ' ');
+            write_string(g, name_of_token(p->type));
+            write_char(g, ' ');
+            write_comment_AE(g, p->right);
+            write_char(g, ')');
+            break;
+        default:
+            fprintf(stderr, "Unexpected type #%d in write_comment_AE\n", p->type);
+            exit(1);
+    }
+
+}
+
+void write_comment_content(struct generator * g, struct node * p,
+                           const char * end) {
     switch (p->type) {
         case c_mathassign:
         case c_plusassign:
@@ -156,7 +242,8 @@ void write_comment_content(struct generator * g, struct node * p) {
                 write_char(g, ' ');
             }
             write_string(g, name_of_token(p->type));
-            write_string(g, " <integer expression>");
+            write_char(g, ' ');
+            write_comment_AE(g, p->AE);
             break;
         case c_eq:
         case c_ne:
@@ -164,22 +251,38 @@ void write_comment_content(struct generator * g, struct node * p) {
         case c_ge:
         case c_lt:
         case c_le:
-            write_string(g, "$(<integer expression> ");
+            write_string(g, "$(");
+            write_comment_AE(g, p->left);
+            write_char(g, ' ');
             write_string(g, name_of_token(p->type));
-            write_string(g, " <integer expression>)");
+            write_char(g, ' ');
+            write_comment_AE(g, p->AE);
+            write_char(g, ')');
             break;
         case c_define:
             if (p->mode == m_forward) {
-                write_string(g, "forwardmode ");
+                write_string(g, "forwardmode define ");
             } else {
-                write_string(g, "backwardmode ");
+                write_string(g, "backwardmode define ");
             }
-            /* FALLTHRU */
+            write_s(g, p->name->s);
+            break;
+        case c_literalstring:
+            write_comment_literalstring(g, p->literalstring, end);
+            break;
+        case c_call:
+        case c_grouping:
+        case c_name:
+            write_s(g, p->name->s);
+            break;
         default:
             write_string(g, name_of_token(p->type));
             if (p->name) {
                 write_char(g, ' ');
                 write_s(g, p->name->s);
+            } else if (p->literalstring) {
+                write_char(g, ' ');
+                write_comment_literalstring(g, p->literalstring, end);
             }
     }
     write_string(g, ", line ");
@@ -190,7 +293,7 @@ static void write_comment(struct generator * g, struct node * p) {
     if (!g->options->comments) return;
     write_margin(g);
     write_string(g, "/* ");
-    write_comment_content(g, p);
+    write_comment_content(g, p, "*/");
     write_string(g, " */");
     write_newline(g);
 }
@@ -1219,16 +1322,21 @@ static void generate_dollar(struct generator * g, struct node * p) {
 
     struct str * savevar = vars_newname(g);
     g->B[0] = str_data(savevar);
-    writef(g, "~{~Mstruct SN_env en~B0 = * z;~N", p);
     // only copy start - we don't need to copy variables
-    /* Assume failure. */
-    writef(g, "~Mint failure = 1;~N"
-          "~Mz->p = ~V;~N"
-          "~Mz->lb = z->c = 0;~N"
-          "~Mz->l = SIZE(z->p);~N", p);
+    writef(g, "~{~Mstruct SN_env en~B0 = * z;~N", p);
+    if (p->left->possible_signals == -1) {
+        /* Assume failure. */
+        w(g, "~Mint ~B0_f = 1;~N");
+    }
+    writef(g, "~Mz->p = ~V;~N"
+              "~Mz->lb = z->c = 0;~N"
+              "~Mz->l = SIZE(z->p);~N", p);
     generate(g, p->left);
-    /* Mark success. */
-    w(g, "~Mfailure = 0;~N");
+    if (p->left->possible_signals == -1) {
+        /* Mark success. */
+        g->B[0] = str_data(savevar);
+        w(g, "~M~B0_f = 0;~N");
+    }
     if (g->label_used)
         wsetl(g, g->failure_label);
 
@@ -1239,8 +1347,15 @@ static void generate_dollar(struct generator * g, struct node * p) {
 
     g->B[0] = str_data(savevar);
     writef(g, "~M~V = z->p;~N"
-          "~M* z = en~B0;~N"
-          "~Mif (failure) ~f~N~}", p);
+              "~M* z = en~B0;~N", p);
+    if (p->left->possible_signals == 0) {
+        // p->left always signals f.
+        w(g, "~M~f~N");
+    } else if (p->left->possible_signals == -1) {
+        w(g, "~Mif (~B0_f) ~f~N");
+    }
+    w(g, "~}");
+
     str_delete(savevar);
 }
 
@@ -1959,20 +2074,10 @@ extern void generate_program_c(struct generator * g) {
 
 extern struct generator * create_generator(struct analyser * a, struct options * o) {
     NEW(generator, g);
+    *g = (struct generator){0};
     g->analyser = a;
     g->options = o;
-    g->margin = 0;
-    g->debug_count = 0;
-    g->copy_from_count = 0;
-    g->line_count = 0;
-    g->line_labelled = 0;
     g->failure_label = -1;
-    g->unreachable = false;
-#ifndef DISABLE_PYTHON
-    g->max_label = 0;
-#endif
-    g->java_import_arrays = false;
-    g->java_import_chararraysequence = false;
     return g;
 }
 
