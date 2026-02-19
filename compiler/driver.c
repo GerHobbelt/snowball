@@ -22,6 +22,9 @@
 #define DEFAULT_CS_AMONG_CLASS "Among"
 #define DEFAULT_CS_STRING_CLASS "StringBuilder"
 
+#define DEFAULT_CPLUSPLUS_NAMESPACE "Snowball"
+#define DEFAULT_CPLUSPLUS_BASE_CLASS "Stemmer"
+
 #define DEFAULT_JS_BASE_CLASS "BaseStemmer"
 
 #define DEFAULT_PYTHON_BASE_CLASS "BaseStemmer"
@@ -55,11 +58,12 @@ static void print_arglist(int exit_code) {
                "  -vp, -vprefix VARIABLE_PREFIX\n"
                "  -i, -include DIRECTORY\n"
                "  -r, -runtime DIRECTORY\n"
+               "  -cheader                         header name to include from C/C++ file\n"
+               "  -hheader                         header name to include from C/C++ header\n"
                "  -p, -parentclassname CLASS_NAME  fully qualified parent class name\n"
                "  -P, -Package PACKAGE_NAME        package name for stemmers\n"
                "  -S, -Stringclass STRING_CLASS    StringBuffer-compatible class\n"
                "  -a, -amongclass AMONG_CLASS      fully qualified name of the Among class\n"
-               "  -gop, -gopackage PACKAGE_NAME    Go package name for stemmers\n"
                "  -gor, -goruntime PACKAGE_NAME    Go snowball runtime package\n"
                "  --help                           display this help and exit\n"
                "  --version                        output version information and exit\n"
@@ -189,6 +193,16 @@ static struct options * read_options(int * argc_ptr, char * argv[]) {
                 o->variables_prefix = argv[i++];
                 continue;
             }
+            if (eq(s, "-cheader")) {
+                check_lim(i, argc);
+                o->cheader = argv[i++];
+                continue;
+            }
+            if (eq(s, "-hheader")) {
+                check_lim(i, argc);
+                o->hheader = argv[i++];
+                continue;
+            }
             if (eq(s, "-i") || eq(s, "-include")) {
                 check_lim(i, argc);
 
@@ -238,11 +252,6 @@ static struct options * read_options(int * argc_ptr, char * argv[]) {
                 o->among_class = argv[i++];
                 continue;
             }
-            if (eq(s, "-gop") || eq(s, "-gopackage")) {
-                check_lim(i, argc);
-                o->package = argv[i++];
-                continue;
-            }
             if (eq(s, "-gor") || eq(s, "-goruntime")) {
                 check_lim(i, argc);
                 o->go_snowball_runtime = argv[i++];
@@ -270,8 +279,14 @@ static struct options * read_options(int * argc_ptr, char * argv[]) {
     /* Set language-dependent defaults. */
     switch (o->target_lang) {
         case LANG_C:
+            encoding_opt = NULL;
+            break;
         case LANG_CPLUSPLUS:
             encoding_opt = NULL;
+            if (!o->parent_class_name)
+                o->parent_class_name = DEFAULT_CPLUSPLUS_BASE_CLASS;
+            if (!o->package)
+                o->package = DEFAULT_CPLUSPLUS_NAMESPACE;
             break;
         case LANG_CSHARP:
             o->encoding = ENC_WIDECHARS;
@@ -348,7 +363,6 @@ static struct options * read_options(int * argc_ptr, char * argv[]) {
             fprintf(stderr, "warning: -vp/-vprefix only meaningful for C and C++\n");
         }
     }
-    if (!o->externals_prefix) o->externals_prefix = "";
 
     // Split any extension off o->output_file and set o->output_leaf to just
     // its leafname (which e.g. is used to generate `#include "english.h"` in
@@ -363,9 +377,8 @@ static struct options * read_options(int * argc_ptr, char * argv[]) {
         slash = strrchr(leaf, '\\');
         if (slash != NULL) leaf = slash + 1;
 
-        const char * dot = strchr(leaf, '.');
+        const char * dot = strrchr(leaf, '.');
         if (dot) {
-            o->extension = create_s_from_sz(dot);
             o->output_file = create_s_from_data(leaf, dot - leaf);
         } else {
             o->output_file = create_s_from_sz(leaf);
@@ -374,6 +387,7 @@ static struct options * read_options(int * argc_ptr, char * argv[]) {
     } else {
         // Remove any extension from o->output_file so `-o path/to/english.c`
         // works.
+        o->output_file[SIZE(o->output_file)] = '\0';
         const char * output_file = (const char *)o->output_file;
         const char * slash = strrchr(output_file, '/');
         const char * leaf = (slash == NULL) ? output_file : slash + 1;
@@ -381,7 +395,7 @@ static struct options * read_options(int * argc_ptr, char * argv[]) {
         slash = strrchr(leaf, '\\');
         if (slash != NULL) leaf = slash + 1;
 
-        const char * dot = strchr(leaf, '.');
+        const char * dot = strrchr(leaf, '.');
         if (dot) {
             o->extension = create_s_from_sz(dot);
             SET_SIZE(o->output_file, dot - output_file);
@@ -392,16 +406,20 @@ static struct options * read_options(int * argc_ptr, char * argv[]) {
     }
 
     if (!o->name) {
-        /* Default class name to basename of output_file - this is the standard
-         * convention for at least Java and C#.
-         */
         o->name = copy_s(o->output_leaf);
+        const byte * dot = memchr(o->name, '.', SIZE(o->name));
+        if (dot) {
+            // Trim off any extension (we only remove the last of multiple
+            // extensions above).
+            SET_SIZE(o->name, dot - o->name);
+        }
         switch (o->target_lang) {
             case LANG_CSHARP:
             case LANG_PASCAL:
                 /* Upper case initial letter. */
                 o->name[0] = toupper(o->name[0]);
                 break;
+            case LANG_CPLUSPLUS:
             case LANG_JAVASCRIPT:
             case LANG_PHP:
             case LANG_PYTHON: {
@@ -430,7 +448,7 @@ static struct options * read_options(int * argc_ptr, char * argv[]) {
                 break;
             }
             default:
-                /* Just use as-is. */
+                /* Just use as-is, e.g. that's the Java convention. */
                 break;
         }
     }
@@ -510,9 +528,9 @@ extern int main(int argc, char * argv[]) {
                 case LANG_ADA:
                     // 1000000000: local 13.7s vs global 5.2s
                 case LANG_C:
-                    // We lack a way generate lose_s(v) on every `return` from
-                    // the function, but manually adjusting the generated code
-                    // to do this gives:
+                    // We lack a way to generate lose_s(v) on every `return`
+                    // from the function, but manually adjusting the generated
+                    // code to do this gives:
                     //
                     // 1000000000: local 44.9s vs global 6.3s
                 case LANG_CPLUSPLUS:
@@ -554,7 +572,8 @@ extern int main(int argc, char * argv[]) {
                         s = add_literal_to_s(s, ".h");
                         o->output_h = get_output(s);
                         SET_SIZE(s, SIZE(o->output_file));
-                        if (o->extension) {
+                        if (o->extension &&
+                            !(SIZE(o->extension) == 2 && memcmp(o->extension, ".h", 2) == 0)) {
                             s = add_s_to_s(s, o->extension);
                         } else if (o->target_lang == LANG_CPLUSPLUS) {
                             s = add_literal_to_s(s, ".cc");
@@ -575,7 +594,9 @@ extern int main(int argc, char * argv[]) {
                         s = add_literal_to_s(s, ".ads");
                         o->output_h = get_output(s);
                         SET_SIZE(s, SIZE(o->output_file));
-                        if (o->extension) {
+                        if (o->extension &&
+                            !(SIZE(o->extension) == 4 && memcmp(o->extension, ".ads", 2) == 0)) {
+                            s = add_s_to_s(s, o->extension);
                             s = add_s_to_s(s, o->extension);
                         } else {
                             s = add_literal_to_s(s, ".adb");
