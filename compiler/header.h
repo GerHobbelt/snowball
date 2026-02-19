@@ -18,8 +18,10 @@ typedef unsigned short symbol;
 // Similar to NEW() but allocates an array of N objects of type `struct TYPE *`.
 #define NEWVEC(TYPE, V, N) struct TYPE * V = (struct TYPE *) MALLOC(sizeof(struct TYPE) * (N))
 
-#define SIZE(p)     ((int *)(p))[-1]
-#define CAPACITY(p) ((int *)(p))[-2]
+#define SIZE(p)            ((const int *)(p))[-1]
+#define SET_SIZE(p, n)     ((int *)(p))[-1] = (n)
+#define ADD_TO_SIZE(p, n)  ((int *)(p))[-1] += (n)
+#define CAPACITY(p)        ((int *)(p))[-2]
 
 extern symbol * create_b(int n);
 extern void report_b(FILE * out, const symbol * p);
@@ -33,16 +35,20 @@ extern symbol * add_symbol_to_b(symbol * p, symbol ch);
 // These routines are like those above but work in byte instead of symbol.
 
 extern byte * create_s(int n);
+extern byte * create_s_from_sz(const char * s);
+extern byte * create_s_from_data(const char * s, int n);
+
 extern void report_s(FILE * out, const byte * p);
 extern void lose_s(byte * p);
 extern byte * increase_capacity_s(byte * p, int n);
 extern byte * ensure_capacity_s(byte * p, int n);
 extern byte * copy_s(const byte * p);
-extern byte * add_s_to_s(byte * p, const char * s, int n);
+extern byte * add_s_to_s(byte * p, const byte * s);
+extern byte * add_slen_to_s(byte * p, const char * s, int n);
 extern byte * add_sz_to_s(byte * p, const char * s);
 extern byte * add_char_to_s(byte * p, char ch);
 // "" LIT is a trick to make compilation fail if LIT is not a string literal.
-#define add_literal_to_s(P, LIT) add_s_to_s(P, "" LIT, sizeof(LIT) - 1)
+#define add_literal_to_s(P, LIT) add_slen_to_s(P, "" LIT, sizeof(LIT) - 1)
 
 struct str; /* defined in space.c */
 
@@ -211,7 +217,6 @@ struct name {
     byte * s;
     byte type;                  /* t_string etc */
     byte mode;                  /* for routines, externals (m_forward, etc) */
-    byte referenced;
     byte value_used;            /* (For variables) is its value ever used? */
     byte initialised;           /* (For variables) is it ever initialised? */
     byte used_in_definition;    /* (grouping) used in grouping definition? */
@@ -223,6 +228,8 @@ struct name {
     // Reachable names are then numbered 0, 1, 2, ... with separate numbering
     // per type.
     int count;
+    // Number of references to this name.
+    int references;
     struct grouping * grouping; /* for grouping names */
     struct node * used;         /* First use, or NULL if not used */
     struct name * local_to;     /* Local to one routine/external */
@@ -308,17 +315,6 @@ enum name_types {
 /*  If this list is extended, adjust write_varname in generator.c  */
 };
 
-/*  In name_count[i] below, remember that
-    type   is
-    ----+----
-      0 |  string
-      1 |  boolean
-      2 |  integer
-      3 |  routine
-      4 |  external
-      5 |  grouping
-*/
-
 struct analyser {
     struct tokeniser * tokeniser;
     struct node * nodes;
@@ -328,7 +324,13 @@ struct analyser {
     byte modifyable;          /* false inside reverse(...) */
     struct node * program;
     struct node * program_end;
-    int name_count[t_size];   /* name_count[i] counts the number of names of type i */
+    /* name_count[i] counts the number of names of type i, where i is an enum
+     * name_types value.  These counts *EXCLUDE* localised variables and
+     * variables which optimised away (e.g. declared but never used).
+     */
+    int name_count[t_size];
+    /* name_count[t_string] + name_count[t_boolean] + name_count[t_integer] */
+    int variable_count;
     struct among * amongs;
     struct among * amongs_end;
     int among_with_function_count; /* number of amongs with functions */
@@ -353,7 +355,11 @@ extern void print_program(struct analyser * a);
 extern struct analyser * create_analyser(struct tokeniser * t);
 extern void close_analyser(struct analyser * a);
 
-extern void read_program(struct analyser * a);
+/** Read and analyse the program.
+ *
+ *  @param localise_mask  bitmask of variable types the generator can localise
+ */
+extern void read_program(struct analyser * a, unsigned localise_mask);
 
 struct generator {
     struct analyser * analyser;
@@ -396,8 +402,12 @@ enum special_labels {
 
 struct options {
     /* for the command line: */
-    const char * output_file;
-    char * name;
+    byte * output_file;
+    // output_file but without any path.
+    byte * output_leaf;
+    // Extension specified in -o option (or NULL if none).
+    byte * extension;
+    byte * name;
     FILE * output_src;
     FILE * output_h;
     byte syntax_tree;
@@ -454,6 +464,9 @@ extern void write_start_comment(struct generator * g,
 
 extern int K_needed(struct generator * g, struct node * p);
 extern int repeat_restore(struct generator * g, struct node * p);
+
+extern int just_return_on_fail(struct generator * g);
+extern int tailcallable(struct generator * g, struct node * p);
 
 /* Generator for C code. */
 extern void generate_program_c(struct generator * g);

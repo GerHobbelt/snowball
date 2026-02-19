@@ -26,16 +26,16 @@ static struct str * vars_newname(struct generator * g) {
 /* Write routines for items from the syntax tree */
 
 static void write_varname(struct generator * g, struct name * p) {
-    int ch = "SBIrxg"[p->type];
     if (p->type != t_external) {
-        write_char(g, ch);
+        // We use the same naming scheme for both global and local variables.
+        write_char(g, "SBIrxg"[p->type]);
         write_char(g, '_');
     }
     write_s(g, p->s);
 }
 
 static void write_varref(struct generator * g, struct name * p) {
-    if (p->type != t_grouping) {
+    if (p->type != t_grouping && p->local_to == NULL) {
         w(g, "this.#");
     }
     write_varname(g, p);
@@ -265,7 +265,7 @@ continue_outer_loop:
                 continue;
             case '+': g->margin++; continue;
             case '-': g->margin--; continue;
-            case 'n': write_string(g, g->options->name); continue;
+            case 'n': write_s(g, g->options->name); continue;
             case 'P': write_string(g, g->options->parent_class_name); continue;
             default:
                 printf("Invalid escape sequence ~%c in writef(g, \"%s\", p)\n",
@@ -1026,7 +1026,7 @@ static void generate_integer_assign(struct generator * g, struct node * p, const
 static void generate_integer_test(struct generator * g, struct node * p) {
     write_comment(g, p);
     int relop = p->type;
-    int optimise_to_return = (g->failure_label == x_return && p->right && p->right->type == c_functionend);
+    int optimise_to_return = tailcallable(g, p);
     if (optimise_to_return) {
         w(g, "~Mreturn ");
         p->right = NULL;
@@ -1050,13 +1050,16 @@ static void generate_integer_test(struct generator * g, struct node * p) {
 static void generate_call(struct generator * g, struct node * p) {
     int signals = p->name->definition->possible_signals;
     write_comment(g, p);
-    if (g->failure_label == x_return &&
-        (signals == 0 || (p->right && p->right->type == c_functionend))) {
-        /* Always fails or tail call. */
+    if (tailcallable(g, p)) {
+        /* Tail call. */
         writef(g, "~Mreturn ~V();~N", p);
-        if (p->right && p->right->type == c_functionend) {
-            p->right = NULL;
-        }
+        p->right = NULL;
+        g->unreachable = true;
+        return;
+    }
+    if (just_return_on_fail(g) && signals == 0) {
+        /* Always fails. */
+        writef(g, "~Mreturn ~V();~N", p);
         g->unreachable = true;
         return;
     }
@@ -1080,19 +1083,34 @@ static void generate_grouping(struct generator * g, struct node * p, int complem
     g->S[1] = complement ? "out" : "in";
     g->I[0] = q->smallest_ch;
     g->I[1] = q->largest_ch;
-    write_failure_if(g, "!(this.~S1_grouping~S0(~V, ~I0, ~I1))", p);
+    if (tailcallable(g, p)) {
+        writef(g, "~Mreturn this.~S1_grouping~S0(~V, ~I0, ~I1);~N", p);
+        p->right = NULL;
+    } else {
+        write_failure_if(g, "!(this.~S1_grouping~S0(~V, ~I0, ~I1))", p);
+    }
 }
 
 static void generate_namedstring(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? "" : "_b";
-    write_failure_if(g, "!(this.eq_s~S0(~V))", p);
+    if (tailcallable(g, p)) {
+        writef(g, "~Mreturn this.eq_s~S0(~V);~N", p);
+        p->right = NULL;
+    } else {
+        write_failure_if(g, "!(this.eq_s~S0(~V))", p);
+    }
 }
 
 static void generate_literalstring(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? "" : "_b";
-    write_failure_if(g, "!(this.eq_s~S0(~L))", p);
+    if (tailcallable(g, p)) {
+        writef(g, "~Mreturn this.eq_s~S0(~L);~N", p);
+        p->right = NULL;
+    } else {
+        write_failure_if(g, "!(this.eq_s~S0(~L))", p);
+    }
 }
 
 static void generate_define(struct generator * g, struct node * p) {
@@ -1113,12 +1131,34 @@ static void generate_define(struct generator * g, struct node * p) {
     g->next_label = 0;
     g->var_number = 0;
 
+    /* Declare local variables. */
+    for (struct name * name = g->analyser->names; name; name = name->next) {
+        if (name->local_to == q) {
+            switch (name->type) {
+                case t_string:
+                    w(g, "~Mlet /** string */ ");
+                    write_varname(g, name);
+                    w(g, ";~N");
+                    break;
+                case t_integer:
+                    w(g, "~Mlet /** number */ ");
+                    write_varname(g, name);
+                    w(g, ";~N");
+                    break;
+                case t_boolean:
+                    w(g, "~Mlet /** boolean */ ");
+                    write_varname(g, name);
+                    w(g, ";~N");
+                    break;
+            }
+        }
+    }
+
     if (q->amongvar_needed) {
-        // among_var is only assigned to, but the initialisation can be
-        // generated in a nested block so it seems hard to declare it as
+        // The "among var" (`a`) is only assigned to, but the initialisation
+        // can be generated in a nested block so it seems hard to declare it as
         // const and still have it visible when we want to use it.
-        w(g, "~M// deno-lint-ignore prefer-const~N");
-        w(g, "~Mlet /** number */ among_var;~N");
+        w(g, "~Mlet /** number */ a;~N");
     }
     str_clear(g->failure_str);
     g->failure_label = x_return;
@@ -1135,6 +1175,21 @@ static void generate_define(struct generator * g, struct node * p) {
         }
     }
     w(g, "~-~M}~N");
+
+    if (q->type == t_external) {
+        w(g, "~N");
+        w(g, "~M/**@return{string}*/~N");
+        writef(g, "~M~W(/**string*/input) {~+~N", p);
+        w(g, "~Mthis.setCurrent(input);~N");
+        writef(g, "~Mthis.#~W();~N", p);
+        w(g, "~Mreturn this.getCurrent();~N");
+        w(g, "~-~M}~N");
+
+        if (SIZE(q->s) == 4 && memcmp(q->s, "stem", 4) == 0) {
+            w(g, "~N");
+            w(g, "~MstemWord = this.stem;~N");
+        }
+    }
 
     str_append(saved_output, g->declarations);
     str_append(saved_output, g->outbuf);
@@ -1158,15 +1213,13 @@ static void generate_substring(struct generator * g, struct node * p) {
     g->I[0] = x->number;
 
     if (x->amongvar_needed) {
-        writef(g, "~Mamong_var = this.find_among~S0(a_~I0~F);~N", p);
+        writef(g, "~Ma = this.find_among~S0(a_~I0~F);~N", p);
         if (!x->always_matches) {
-            write_failure_if(g, "among_var === 0", p);
+            write_failure_if(g, "a === 0", p);
         }
     } else if (x->always_matches) {
         writef(g, "~Mthis.find_among~S0(a_~I0~F);~N", p);
-    } else if (x->command_count == 0 &&
-               g->failure_label == x_return &&
-               x->node->right && x->node->right->type == c_functionend) {
+    } else if (x->command_count == 0 && tailcallable(g, p)) {
         writef(g, "~Mreturn this.find_among~S0(a_~I0~F) !== 0;~N", p);
         x->node->right = NULL;
         g->unreachable = true;
@@ -1188,7 +1241,7 @@ static void generate_among(struct generator * g, struct node * p) {
         /* Only one outcome ("no match" already handled). */
         generate(g, x->commands[0]);
     } else if (x->command_count > 0) {
-        w(g, "~Mswitch (among_var) {~N~+");
+        w(g, "~Mswitch (a) {~N~+");
         for (int i = 1; i <= x->command_count; i++) {
             g->I[0] = i;
             w(g, "~Mcase ~I0: {~N~+");
@@ -1203,18 +1256,16 @@ static void generate_among(struct generator * g, struct node * p) {
 
 static void generate_booltest(struct generator * g, struct node * p, int inverted) {
     write_comment(g, p);
-    if (g->failure_label == x_return) {
-        if (p->right && p->right->type == c_functionend) {
-            // Optimise at end of function.
-            if (inverted) {
-                writef(g, "~Mreturn !~V;~N", p);
-            } else {
-                writef(g, "~Mreturn ~V;~N", p);
-            }
-            p->right = NULL;
-            g->unreachable = true;
-            return;
+    if (tailcallable(g, p)) {
+        // Optimise at end of function.
+        if (inverted) {
+            writef(g, "~Mreturn !~V;~N", p);
+        } else {
+            writef(g, "~Mreturn ~V;~N", p);
         }
+        p->right = NULL;
+        g->unreachable = true;
+        return;
     }
     if (inverted) {
         write_failure_if(g, "~V", p);
@@ -1333,13 +1384,6 @@ static void generate_class_begin(struct generator * g) {
 }
 
 static void generate_class_end(struct generator * g) {
-    w(g, "~N");
-    w(g, "~M/**@return{string}*/~N");
-    w(g, "~MstemWord(/**string*/word) {~+~N");
-    w(g, "~Mthis.setCurrent(word);~N");
-    w(g, "~Mthis.#stem();~N");
-    w(g, "~Mreturn this.getCurrent();~N");
-    w(g, "~-~M}~N");
     w(g, "~-}~N");
     w(g, "~N");
     w(g, "export { ~n };~N");
@@ -1444,6 +1488,7 @@ static void generate_members(struct generator * g) {
     int wrote_members = false;
 
     for (struct name * q = g->analyser->names; q; q = q->next) {
+        if (q->local_to) continue;
         switch (q->type) {
             case t_string:
                 w(g, "~M#");
@@ -1481,10 +1526,20 @@ extern void generate_program_js(struct generator * g) {
 
     write_start_comment(g, "// ", NULL);
 
-    // We generate deno-lint-ignore which may not all be used.
-    // Expressions in conditionals may be constant.
-    // Empty blocks may be generated in some cases.
-    w(g, "// deno-lint-ignore-file ban-unused-ignore no-constant-condition no-empty~N~N");
+    // Disable some deno-lint warnings which the generated code can trigger.
+    w(g, "// deno-lint-ignore-file"
+         // Some of our generated deno-lint-ignore comments may not be used.
+         " ban-unused-ignore"
+         // Expressions in conditionals may be constant.
+         " no-constant-condition"
+         // Empty blocks may be generated in some cases.
+         " no-empty"
+         // Among var `a` is only assigned to once per `among`, but is declared
+         // at the start of the function and may be initialised in a nested
+         // block.
+         //
+         // Some localised variables may only be assigned to once.
+         " prefer-const~N~N");
 
     generate_amongs(g);
     generate_groupings(g);

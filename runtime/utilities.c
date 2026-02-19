@@ -3,14 +3,30 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "header.h"
+#include "snowball_runtime.h"
+
+#ifdef SNOWBALL_RUNTIME_THROW_EXCEPTIONS
+# include <new>
+# include <stdexcept>
+# define SNOWBALL_RETURN_OK return
+# define SNOWBALL_RETURN_OR_THROW(R, E) throw E
+# define SNOWBALL_PROPAGATE_ERR(F) F
+#else
+# define SNOWBALL_RETURN_OK return 0
+# define SNOWBALL_RETURN_OR_THROW(R, E) return R
+# define SNOWBALL_PROPAGATE_ERR(F) do { \
+        int snowball_err = F; \
+        if (snowball_err < 0) return snowball_err; \
+    } while (0)
+#endif
 
 #define CREATE_SIZE 1
 
 extern symbol * create_s(void) {
     symbol * p;
     void * mem = malloc(HEAD + (CREATE_SIZE + 1) * sizeof(symbol));
-    if (mem == NULL) return NULL;
+    if (mem == NULL)
+        SNOWBALL_RETURN_OR_THROW(NULL, std::bad_alloc());
     p = (symbol *) (HEAD + (char *) mem);
     CAPACITY(p) = CREATE_SIZE;
     SET_SIZE(p, 0);
@@ -375,13 +391,13 @@ static int increase_size(symbol ** p, int n) {
    s_size symbols at s.
    Returns 0 on success, -1 on error.
 */
-extern int replace_s(struct SN_env * z, int c_bra, int c_ket, int s_size, const symbol * s, int * adjptr)
+extern SNOWBALL_ERR replace_s(struct SN_env * z, int c_bra, int c_ket, int s_size, const symbol * s)
 {
     int adjustment = s_size - (c_ket - c_bra);
-    int len = SIZE(z->p);
     if (adjustment != 0) {
+        int len = SIZE(z->p);
         if (adjustment + len > CAPACITY(z->p)) {
-            if (increase_size(&z->p, adjustment + len) < 0) return -1;
+            SNOWBALL_PROPAGATE_ERR(increase_size(&z->p, adjustment + len));
         }
         memmove(z->p + c_ket + adjustment,
                 z->p + c_ket,
@@ -394,12 +410,13 @@ extern int replace_s(struct SN_env * z, int c_bra, int c_ket, int s_size, const 
             z->c = c_bra;
     }
     if (s_size) memmove(z->p + c_bra, s, s_size * sizeof(symbol));
-    if (adjptr != NULL)
-        *adjptr = adjustment;
-    return 0;
+    SNOWBALL_RETURN_OK;
 }
 
-static int slice_check(struct SN_env * z) {
+# define REPLACE_S(Z, B, K, SIZE, S) \
+    SNOWBALL_PROPAGATE_ERR(replace_s(Z, B, K, SIZE, S))
+
+static SNOWBALL_ERR slice_check(struct SN_env * z) {
 
     if (z->bra < 0 ||
         z->bra > z->ket ||
@@ -410,63 +427,80 @@ static int slice_check(struct SN_env * z) {
         fprintf(stderr, "faulty slice operation:\n");
         debug(z, -1, 0);
 #endif
-        return -1;
+        SNOWBALL_RETURN_OR_THROW(-1, std::logic_error("Snowball slice invalid"));
     }
-    return 0;
+    SNOWBALL_RETURN_OK;
 }
 
-extern int slice_from_s(struct SN_env * z, int s_size, const symbol * s) {
-    if (slice_check(z)) return -1;
-    if (replace_s(z, z->bra, z->ket, s_size, s, NULL) < 0) return -1;
+# define SLICE_CHECK(Z) SNOWBALL_PROPAGATE_ERR(slice_check(Z))
+
+extern SNOWBALL_ERR slice_from_s(struct SN_env * z, int s_size, const symbol * s) {
+    SLICE_CHECK(z);
+    REPLACE_S(z, z->bra, z->ket, s_size, s);
     z->ket = z->bra + s_size;
-    return 0;
+    SNOWBALL_RETURN_OK;
 }
 
-extern int slice_from_v(struct SN_env * z, const symbol * p) {
+extern SNOWBALL_ERR slice_from_v(struct SN_env * z, const symbol * p) {
     return slice_from_s(z, SIZE(p), p);
 }
 
-extern int slice_del(struct SN_env * z) {
-    return slice_from_s(z, 0, NULL);
+extern SNOWBALL_ERR slice_del(struct SN_env * z) {
+    SLICE_CHECK(z);
+    {
+        int slice_size = z->ket - z->bra;
+        if (slice_size != 0) {
+            int len = SIZE(z->p);
+            memmove(z->p + z->bra,
+                    z->p + z->ket,
+                    (len - z->ket) * sizeof(symbol));
+            SET_SIZE(z->p, len - slice_size);
+            z->l -= slice_size;
+            if (z->c >= z->ket)
+                z->c -= slice_size;
+            else if (z->c > z->bra)
+                z->c = z->bra;
+        }
+    }
+    z->ket = z->bra;
+    SNOWBALL_RETURN_OK;
 }
 
-extern int insert_s(struct SN_env * z, int bra, int ket, int s_size, const symbol * s) {
-    int adjustment;
-    if (replace_s(z, bra, ket, s_size, s, &adjustment))
-        return -1;
-    if (bra <= z->bra) z->bra += adjustment;
-    if (bra <= z->ket) z->ket += adjustment;
-    return 0;
+extern SNOWBALL_ERR insert_s(struct SN_env * z, int bra, int ket, int s_size, const symbol * s) {
+    REPLACE_S(z, bra, ket, s_size, s);
+    if (bra <= z->ket) {
+        int adjustment = s_size - (ket - bra);
+        z->ket += adjustment;
+        if (bra <= z->bra) z->bra += adjustment;
+    }
+    SNOWBALL_RETURN_OK;
 }
 
-extern int insert_v(struct SN_env * z, int bra, int ket, const symbol * p) {
+extern SNOWBALL_ERR insert_v(struct SN_env * z, int bra, int ket, const symbol * p) {
     return insert_s(z, bra, ket, SIZE(p), p);
 }
 
-extern symbol * slice_to(struct SN_env * z, symbol * p) {
-    if (slice_check(z)) {
-        lose_s(p);
-        return NULL;
-    }
+extern SNOWBALL_ERR slice_to(struct SN_env * z, symbol ** p) {
+    SLICE_CHECK(z);
     {
         int len = z->ket - z->bra;
-        if (CAPACITY(p) < len) {
-            if (increase_size(&p, len) < 0) return NULL;
+        if (CAPACITY(*p) < len) {
+            SNOWBALL_PROPAGATE_ERR(increase_size(p, len));
         }
-        memmove(p, z->p + z->bra, len * sizeof(symbol));
-        SET_SIZE(p, len);
+        memmove(*p, z->p + z->bra, len * sizeof(symbol));
+        SET_SIZE(*p, len);
     }
-    return p;
+    SNOWBALL_RETURN_OK;
 }
 
-extern symbol * assign_to(struct SN_env * z, symbol * p) {
+extern SNOWBALL_ERR assign_to(struct SN_env * z, symbol ** p) {
     int len = z->l;
-    if (CAPACITY(p) < len) {
-        if (increase_size(&p, len) < 0) return NULL;
+    if (CAPACITY(*p) < len) {
+        SNOWBALL_PROPAGATE_ERR(increase_size(p, len));
     }
-    memmove(p, z->p, len * sizeof(symbol));
-    SET_SIZE(p, len);
-    return p;
+    memmove(*p, z->p, len * sizeof(symbol));
+    SET_SIZE(*p, len);
+    SNOWBALL_RETURN_OK;
 }
 
 extern int len_utf8(const symbol * p) {

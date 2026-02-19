@@ -28,6 +28,7 @@ static struct str * vars_newname(struct generator * g) {
 
 static void write_varname(struct generator * g, struct name * p) {
     if (p->type != t_external) {
+        // We use the same naming scheme for both global and local variables.
         write_char(g, "SBIRXG"[p->type]);
         write_char(g, '_');
     }
@@ -45,7 +46,7 @@ static void write_varname(struct generator * g, struct name * p) {
 }
 
 static void write_varref(struct generator * g, struct name * p) {  /* reference to variable */
-    if (p->type < t_routine) write_string(g, "Z.");
+    if (p->type < t_routine && p->local_to == NULL) write_string(g, "Z.");
     write_varname(g, p);
 }
 
@@ -248,7 +249,7 @@ static void writef(struct generator * g, const char * input, struct node * p) {
                 continue;
             case '+': g->margin++; continue;
             case '-': g->margin--; continue;
-            case 'n': write_string(g, g->options->name); continue;
+            case 'n': write_s(g, g->options->name); continue;
             default:
                 printf("Invalid escape sequence ~%c in writef(g, \"%s\", p)\n",
                        ch, input);
@@ -1037,7 +1038,7 @@ static void generate_integer_assign(struct generator * g, struct node * p, const
 static void generate_integer_test(struct generator * g, struct node * p) {
     write_comment(g, p);
     int relop = p->type;
-    int optimise_to_return = (g->failure_label == x_return && p->right && p->right->type == c_functionend);
+    int optimise_to_return = tailcallable(g, p);
     if (optimise_to_return) {
         w(g, "~MResult := (");
         p->right = NULL;
@@ -1062,19 +1063,18 @@ static void generate_integer_test(struct generator * g, struct node * p) {
 static void generate_call(struct generator * g, struct node * p) {
     int signals = p->name->definition->possible_signals;
     write_comment(g, p);
-    if (g->failure_label == x_return) {
-        if (p->right && p->right->type == c_functionend) {
-            /* Tail call. */
-            writef(g, "~M~V (Z, Result);~N~Mreturn;~N", p);
-            p->right = NULL;
-            return;
-        }
-        if (signals == 0) {
-            /* Always fails. */
-            writef(g, "~M~V (Z, Result);~N", p);
-            w(g, "~Mreturn~N");
-            return;
-        }
+    if (tailcallable(g, p)) {
+        /* Tail call. */
+        writef(g, "~M~V (Z, Result);~N", p);
+        w(g, "~Mreturn;~N");
+        p->right = NULL;
+        return;
+    }
+    if (just_return_on_fail(g) && signals == 0) {
+        /* Always fails. */
+        writef(g, "~M~V (Z, Result);~N", p);
+        w(g, "~Mreturn~N");
+        return;
     }
     if (signals == 1) {
         /* Always succeeds. */
@@ -1097,22 +1097,40 @@ static void generate_grouping(struct generator * g, struct node * p, int complem
     g->S[1] = complement ? "Out_" : "In_";
     g->I[0] = q->smallest_ch;
     g->I[1] = q->largest_ch;
-    writef(g, "~M~S1Grouping~S0 (Z, ~V, ~I0, ~I1, False, C);~N", p);
-    write_failure_if(g, "C /= 0", p);
+    if (tailcallable(g, p)) {
+        writef(g, "~M~S1Grouping~S0 (Z, ~V, ~I0, ~I1, False, C);~N", p);
+        w(g, "~MResult := (C = 0);~N");
+        p->right = NULL;
+    } else {
+        writef(g, "~M~S1Grouping~S0 (Z, ~V, ~I0, ~I1, False, C);~N", p);
+        write_failure_if(g, "C /= 0", p);
+    }
     g->temporary_used = true;
 }
 
 static void generate_namedstring(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? "" : "_Backward";
-    write_failure_if(g, "not Eq_S~S0 (Z, ~V, Z.L~W)", p);
+    if (tailcallable(g, p)) {
+        writef(g, "~MEq_S~S0 (Z, ~V, Z.L~W, Result);~N", p);
+        p->right = NULL;
+    } else {
+        writef(g, "~MEq_S~S0 (Z, ~V, Z.L~W, Result);~N", p);
+        write_failure_if(g, "not Result", p);
+    }
 }
 
 static void generate_literalstring(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? "" : "_Backward";
     g->I[0] = SIZE(p->literalstring);
-    write_failure_if(g, "not Eq_S~S0 (Z, ~L, ~I0)", p);
+    if (tailcallable(g, p)) {
+        writef(g, "~MEq_S~S0 (Z, ~L, ~I0, Result);~N", p);
+        p->right = NULL;
+    } else {
+        writef(g, "~MEq_S~S0 (Z, ~L, ~I0, Result);~N", p);
+        write_failure_if(g, "not Result", p);
+    }
 }
 
 static void generate_define(struct generator * g, struct node * p) {
@@ -1156,6 +1174,30 @@ static void generate_define(struct generator * g, struct node * p) {
     }
 
     writef(g, "~-~Mend ~W;~N", p);
+
+    /* Declare local variables. */
+    struct str * temp = g->outbuf;
+    g->outbuf = saved_output;
+    for (struct name * name = g->analyser->names; name; name = name->next) {
+        if (name->local_to == p->name) {
+            switch (name->type) {
+                case t_string:
+                    assert(0);
+                    break;
+                case t_integer:
+                    w(g,  "      ");
+                    write_varname(g, name);
+                    w(g,  " : Integer;\n");
+                    break;
+                case t_boolean:
+                    w(g,  "      ");
+                    write_varname(g, name);
+                    w(g,  " : Boolean;\n");
+                    break;
+            }
+        }
+    }
+    g->outbuf = temp;
 
     if (g->temporary_used) {
         str_append_string(saved_output, "      C : Result_Index;\n");
@@ -1334,12 +1376,7 @@ static void generate_substring(struct generator * g, struct node * p) {
     writef(g, "~MFind_Among~S0 (Z, A_~I0, Among_String, ~S1, A);~N", p);
     if (x->always_matches) {
         // The result in `A` can't be zero.
-    } else if (x->command_count == 0 &&
-               g->failure_label == x_return &&
-               x->node->right && x->node->right->type == c_functionend) {
-        if (g->failure_label != x_return) {
-            printf("failure_label is %d\n", g->failure_label);
-        }
+    } else if (x->command_count == 0 && tailcallable(g, p)) {
         writef(g, "~MResult := A /= 0;~N", p);
         x->node->right = NULL;
     } else {
@@ -1377,17 +1414,15 @@ static void generate_among(struct generator * g, struct node * p) {
 
 static void generate_booltest(struct generator * g, struct node * p, int inverted) {
     write_comment(g, p);
-    if (g->failure_label == x_return) {
-        if (p->right && p->right->type == c_functionend) {
-            // Optimise at end of function.
-            if (inverted) {
-                writef(g, "~MResult := not ~V;~N", p);
-            } else {
-                writef(g, "~MResult := ~V;~N", p);
-            }
-            p->right = NULL;
-            return;
+    if (tailcallable(g, p)) {
+        // Optimise at end of function.
+        if (inverted) {
+            writef(g, "~MResult := not ~V;~N", p);
+        } else {
+            writef(g, "~MResult := ~V;~N", p);
         }
+        p->right = NULL;
+        return;
     }
     if (inverted) {
         write_failure_if(g, "~V", p);
@@ -1513,11 +1548,10 @@ static void generate_method_decls(struct generator * g, enum name_types type) {
 
 static void generate_member_decls(struct generator * g) {
     w(g, "   type Context_Type is new Stemmer.Context_Type with");
-    if (g->analyser->name_count[t_string] > 0 ||
-        g->analyser->name_count[t_integer] > 0 ||
-        g->analyser->name_count[t_boolean] > 0) {
+    if (g->analyser->variable_count > 0) {
         w(g, " record~N~+");
         for (struct name * q = g->analyser->names; q; q = q->next) {
+            if (q->local_to) continue;
             switch (q->type) {
                 case t_string:
                     write_margin(g);
@@ -1721,7 +1755,7 @@ extern void generate_program_ada(struct generator * g) {
 
     /* generate implementation. */
     w(g, "package body Stemmer.");
-    w(g, g->options->package);
+    write_string(g, g->options->package);
     w(g, " is~N~+~N");
     w(g, "~Mpragma Style_Checks (\"-mr\");~N");
     w(g, "~Mpragma Warnings (Off, \"*variable*is never read and never assigned*\");~N");
@@ -1753,7 +1787,7 @@ extern void generate_program_ada(struct generator * g) {
     generate_groupings(g);
 
     w(g, "end Stemmer.");
-    w(g, g->options->package);
+    write_string(g, g->options->package);
     w(g, ";~N");
 
     output_str(g->options->output_src, g->declarations);
@@ -1764,7 +1798,7 @@ extern void generate_program_ada(struct generator * g) {
     g->margin = 0;
     write_start_comment(g, "--  ", NULL);
     w(g, "package Stemmer.");
-    w(g, g->options->package);
+    write_string(g, g->options->package);
     w(g, " with SPARK_Mode is~N~+");
     w(g, "   type Context_Type is new Stemmer.Context_Type with private;~N");
     generate_method_decls(g, t_external);
@@ -1772,7 +1806,7 @@ extern void generate_program_ada(struct generator * g) {
     w(g, "private~N");
     generate_member_decls(g);
     w(g, "end Stemmer.");
-    w(g, g->options->package);
+    write_string(g, g->options->package);
     w(g, ";~N");
     output_str(g->options->output_h, g->outbuf);
     str_delete(g->failure_str);

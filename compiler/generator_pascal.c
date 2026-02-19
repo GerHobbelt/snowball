@@ -53,6 +53,8 @@ static void write_varname(struct generator * g, struct name * p) {
          * seems more helpful to leave those alone and encourage snowball
          * program authors to avoid naming externals which only differ by
          * case.
+         *
+         * We use the same naming scheme for both global and local variables.
          */
         int len = SIZE(p->s);
         int lower_pending = 0;
@@ -274,7 +276,7 @@ static void writef(struct generator * g, const char * input, struct node * p) {
                 continue;
             case '+': g->margin++; continue;
             case '-': g->margin--; continue;
-            case 'n': write_string(g, g->options->name); continue;
+            case 'n': write_s(g, g->options->name); continue;
             default:
                 printf("Invalid escape sequence ~%c in writef(g, \"%s\", p)\n",
                        ch, input);
@@ -1033,7 +1035,7 @@ static void generate_integer_assign(struct generator * g, struct node * p, const
 static void generate_integer_test(struct generator * g, struct node * p) {
     write_comment(g, p);
     int relop = p->type;
-    int optimise_to_return = (g->failure_label == x_return && p->right && p->right->type == c_functionend);
+    int optimise_to_return = tailcallable(g, p);
     if (optimise_to_return) {
         w(g, "~MResult := ");
         p->right = NULL;
@@ -1059,19 +1061,17 @@ static void generate_integer_test(struct generator * g, struct node * p) {
 static void generate_call(struct generator * g, struct node * p) {
     int signals = p->name->definition->possible_signals;
     write_comment(g, p);
-    if (g->failure_label == x_return) {
-        if (p->right && p->right->type == c_functionend) {
-            /* Tail call. */
-            writef(g, "~MResult := ~V;~N", p);
-            p->right = NULL;
-            return;
-        }
-        if (signals == 0) {
-            /* Always fails. */
-            writef(g, "~MBegin; Result := ~V; Exit; End;~N", p);
-            g->unreachable = true;
-            return;
-        }
+    if (tailcallable(g, p)) {
+        /* Tail call. */
+        writef(g, "~MResult := ~V;~N", p);
+        p->right = NULL;
+        return;
+    }
+    if (just_return_on_fail(g) && signals == 0) {
+        /* Always fails. */
+        writef(g, "~MBegin; Result := ~V; Exit; End;~N", p);
+        g->unreachable = true;
+        return;
     }
     if (signals == 1) {
         /* Always succeeds. */
@@ -1093,19 +1093,34 @@ static void generate_grouping(struct generator * g, struct node * p, int complem
     g->S[1] = complement ? "Out" : "In";
     g->I[0] = q->smallest_ch;
     g->I[1] = q->largest_ch;
-    write_failure_if(g, "Not (~S1Grouping~S0(~V, ~I0, ~I1))", p);
+    if (tailcallable(g, p)) {
+        writef(g, "~MResult := ~S1Grouping~S0(~V, ~I0, ~I1);~N", p);
+        p->right = NULL;
+    } else {
+        write_failure_if(g, "Not (~S1Grouping~S0(~V, ~I0, ~I1))", p);
+    }
 }
 
 static void generate_namedstring(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? "" : "Bk";
-    write_failure_if(g, "Not (EqS~S0(~V))", p);
+    if (tailcallable(g, p)) {
+        writef(g, "~MResult := EqS~S0(~V);~N", p);
+        p->right = NULL;
+    } else {
+        write_failure_if(g, "Not (EqS~S0(~V))", p);
+    }
 }
 
 static void generate_literalstring(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? "" : "Bk";
-    write_failure_if(g, "Not (EqS~S0(~L))", p);
+    if (tailcallable(g, p)) {
+        writef(g, "~MResult := EqS~S0(~L);~N", p);
+        p->right = NULL;
+    } else {
+        write_failure_if(g, "Not (EqS~S0(~L))", p);
+    }
 }
 
 static void generate_define(struct generator * g, struct node * p) {
@@ -1142,6 +1157,32 @@ static void generate_define(struct generator * g, struct node * p) {
         }
     }
     w(g, "~}");
+
+    /* Declare local variables. */
+    struct str * temp = g->outbuf;
+    g->outbuf = g->declarations;
+    for (struct name * name = g->analyser->names; name; name = name->next) {
+        if (name->local_to == q) {
+            switch (name->type) {
+                case t_string:
+                    w(g,  "    ");
+                    write_varname(g, name);
+                    w(g,  " : AnsiString;\n");
+                    break;
+                case t_integer:
+                    w(g,  "    ");
+                    write_varname(g, name);
+                    w(g,  " : Integer;\n");
+                    break;
+                case t_boolean:
+                    w(g,  "    ");
+                    write_varname(g, name);
+                    w(g,  " : Boolean;\n");
+                    break;
+            }
+        }
+    }
+    g->outbuf = temp;
 
     if (g->temporary_used) {
         str_append_string(g->declarations, "    C : Integer;\n");
@@ -1195,9 +1236,7 @@ static void generate_substring(struct generator * g, struct node * p) {
         }
     } else if (x->always_matches) {
         writef(g, "~MFindAmong~S0(a_~I0, ~I1);~N", p);
-    } else if (x->command_count == 0 &&
-               g->failure_label == x_return &&
-               x->node->right && x->node->right->type == c_functionend) {
+    } else if (x->command_count == 0 && tailcallable(g, p)) {
         writef(g, "~MResult := FindAmong~S0(a_~I0, ~I1) <> 0;~N", p);
         x->node->right = NULL;
     } else {
@@ -1232,17 +1271,15 @@ static void generate_among(struct generator * g, struct node * p) {
 
 static void generate_booltest(struct generator * g, struct node * p, int inverted) {
     write_comment(g, p);
-    if (g->failure_label == x_return) {
-        if (p->right && p->right->type == c_functionend) {
-            // Optimise at end of function.
-            if (inverted) {
-                writef(g, "~MResult := !~V;~N", p);
-            } else {
-                writef(g, "~MResult := ~V;~N", p);
-            }
-            p->right = NULL;
-            return;
+    if (tailcallable(g, p)) {
+        // Optimise at end of function.
+        if (inverted) {
+            writef(g, "~MResult := !~V;~N", p);
+        } else {
+            writef(g, "~MResult := ~V;~N", p);
         }
+        p->right = NULL;
+        return;
     }
     if (inverted) {
         write_failure_if(g, "~V", p);
@@ -1403,6 +1440,7 @@ static void generate_method_decls(struct generator * g) {
 static void generate_member_decls(struct generator * g) {
     int first = true;
     for (struct name * q = g->analyser->names; q; q = q->next) {
+        if (q->local_to) continue;
         switch (q->type) {
             case t_string:
             case t_integer:

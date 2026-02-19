@@ -167,7 +167,7 @@ RUNTIME_SOURCES  = runtime/api.c \
 		   runtime/utilities.c
 
 RUNTIME_HEADERS  = runtime/api.h \
-		   runtime/header.h
+		   runtime/snowball_runtime.h
 
 LIBSTEMMER_SOURCES = libstemmer/libstemmer.c
 LIBSTEMMER_UTF8_SOURCES = libstemmer/libstemmer_utf8.c
@@ -281,7 +281,7 @@ DART_BUILD_ARTIFACTS = dart/.dart_tool dart/pubspec.lock dart/.dart_deps
 JAVA_CLASSES = $(JAVA_SOURCES:.java=.class)
 JAVA_RUNTIME_CLASSES=$(JAVA_RUNTIME_SOURCES:.java=.class)
 
-CFLAGS=-g -O2 -W -Wall -Wmissing-prototypes -Wmissing-declarations -Wshadow $(WERROR)
+CFLAGS=-g -O2 -W -Wall -Wcast-qual -Wmissing-prototypes -Wmissing-declarations -Wshadow $(WERROR)
 CPPFLAGS=
 
 INCLUDES=-Iinclude
@@ -302,6 +302,7 @@ clean:
 	      $(C_OTHER_SOURCES) $(C_OTHER_HEADERS) $(C_OTHER_OBJECTS) \
 	      $(CSHARP_SOURCES) \
 	      $(DART_SOURCES) \
+	      $(go_src_dir)/*_stemmer.go $(go_src_main_dir)/stemwords/algorithms.go \
 	      $(JAVA_SOURCES) $(JAVA_CLASSES) $(JAVA_RUNTIME_CLASSES) \
 	      $(JS_SOURCES) \
 	      $(PASCAL_SOURCES) pascal/stemwords.dpr pascal/stemwords pascal/*.o pascal/*.ppu \

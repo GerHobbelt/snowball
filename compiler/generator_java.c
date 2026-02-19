@@ -26,8 +26,9 @@ static struct str * vars_newname(struct generator * g) {
 /* Write routines for items from the syntax tree */
 
 static void write_varname(struct generator * g, struct name * p) {
-    int ch = "SBIrxg"[p->type];
     if (p->type != t_external) {
+        // We use the same naming scheme for both global and local variables.
+        int ch = "SBIrxg"[p->type];
         write_char(g, ch);
         write_char(g, '_');
     }
@@ -224,7 +225,7 @@ static void writef(struct generator * g, const char * input, struct node * p) {
                 continue;
             case '+': g->margin++; continue;
             case '-': g->margin--; continue;
-            case 'n': write_string(g, g->options->name); continue;
+            case 'n': write_s(g, g->options->name); continue;
             default:
                 printf("Invalid escape sequence ~%c in writef(g, \"%s\", p)\n",
                        ch, input);
@@ -962,7 +963,7 @@ static void generate_integer_assign(struct generator * g, struct node * p, const
 static void generate_integer_test(struct generator * g, struct node * p) {
     write_comment(g, p);
     int relop = p->type;
-    int optimise_to_return = (g->failure_label == x_return && p->right && p->right->type == c_functionend);
+    int optimise_to_return = tailcallable(g, p);
     if (optimise_to_return) {
         w(g, "~Mreturn ");
         p->right = NULL;
@@ -989,13 +990,16 @@ static void generate_integer_test(struct generator * g, struct node * p) {
 static void generate_call(struct generator * g, struct node * p) {
     int signals = p->name->definition->possible_signals;
     write_comment(g, p);
-    if (g->failure_label == x_return &&
-        (signals == 0 || (p->right && p->right->type == c_functionend))) {
-        /* Always fails or tail call. */
+    if (tailcallable(g, p)) {
+        /* Tail call. */
         writef(g, "~Mreturn ~V();~N", p);
-        if (p->right && p->right->type == c_functionend) {
-            p->right = NULL;
-        }
+        p->right = NULL;
+        g->unreachable = true;
+        return;
+    }
+    if (just_return_on_fail(g) && signals == 0) {
+        /* Always fails. */
+        writef(g, "~Mreturn ~V();~N", p);
         g->unreachable = true;
         return;
     }
@@ -1019,20 +1023,35 @@ static void generate_grouping(struct generator * g, struct node * p, int complem
     g->S[1] = complement ? "out" : "in";
     g->I[0] = q->smallest_ch;
     g->I[1] = q->largest_ch;
-    write_failure_if(g, "!(~S1_grouping~S0(~V, ~I0, ~I1))", p);
+    if (tailcallable(g, p)) {
+        writef(g, "~Mreturn ~S1_grouping~S0(~V, ~I0, ~I1);~N", p);
+        p->right = NULL;
+    } else {
+        write_failure_if(g, "!(~S1_grouping~S0(~V, ~I0, ~I1))", p);
+    }
 }
 
 static void generate_namedstring(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? "" : "_b";
-    write_failure_if(g, "!(eq_s~S0(new CharArraySequence(~V, L~V)))", p);
+    if (tailcallable(g, p)) {
+        writef(g, "~Mreturn eq_s~S0(new CharArraySequence(~V, L~V));~N", p);
+        p->right = NULL;
+    } else {
+        write_failure_if(g, "!(eq_s~S0(new CharArraySequence(~V, L~V)))", p);
+    }
     g->java_import_chararraysequence = true;
 }
 
 static void generate_literalstring(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? "" : "_b";
-    write_failure_if(g, "!(eq_s~S0(~L))", p);
+    if (tailcallable(g, p)) {
+        writef(g, "~Mreturn eq_s~S0(~L);~N", p);
+        p->right = NULL;
+    } else {
+        write_failure_if(g, "!(eq_s~S0(~L))", p);
+    }
 }
 
 static void generate_define(struct generator * g, struct node * p) {
@@ -1057,6 +1076,27 @@ static void generate_define(struct generator * g, struct node * p) {
 
     g->next_label = 0;
     g->var_number = 0;
+
+    /* Declare local variables. */
+    for (struct name * name = g->analyser->names; name; name = name->next) {
+        if (name->local_to == q) {
+            switch (name->type) {
+                case t_string:
+                    assert(0);
+                    break;
+                case t_integer:
+                    w(g, "~Mint ");
+                    write_varname(g, name);
+                    w(g, ";~N");
+                    break;
+                case t_boolean:
+                    w(g, "~Mboolean ");
+                    write_varname(g, name);
+                    w(g, ";~N");
+                    break;
+            }
+        }
+    }
 
     if (q->amongvar_needed) w(g, "~Mint among_var;~N");
     str_clear(g->failure_str);
@@ -1099,9 +1139,7 @@ static void generate_substring(struct generator * g, struct node * p) {
         }
     } else if (x->always_matches) {
         writef(g, "~Mfind_among~S0(a_~I0);~N", p);
-    } else if (x->command_count == 0 &&
-               g->failure_label == x_return &&
-               x->node->right && x->node->right->type == c_functionend) {
+    } else if (x->command_count == 0 && tailcallable(g, p)) {
         writef(g, "~Mreturn find_among~S0(a_~I0) != 0;~N", p);
         x->node->right = NULL;
         g->unreachable = true;
@@ -1138,18 +1176,16 @@ static void generate_among(struct generator * g, struct node * p) {
 
 static void generate_booltest(struct generator * g, struct node * p, int inverted) {
     write_comment(g, p);
-    if (g->failure_label == x_return) {
-        if (p->right && p->right->type == c_functionend) {
-            // Optimise at end of function.
-            if (inverted) {
-                writef(g, "~Mreturn !~V;~N", p);
-            } else {
-                writef(g, "~Mreturn ~V;~N", p);
-            }
-            p->right = NULL;
-            g->unreachable = true;
-            return;
+    if (tailcallable(g, p)) {
+        // Optimise at end of function.
+        if (inverted) {
+            writef(g, "~Mreturn !~V;~N", p);
+        } else {
+            writef(g, "~Mreturn ~V;~N", p);
         }
+        p->right = NULL;
+        g->unreachable = true;
+        return;
     }
     if (inverted) {
         write_failure_if(g, "~V", p);
@@ -1255,7 +1291,7 @@ static void generate(struct generator * g, struct node * p) {
 
 static void generate_class_begin(struct generator * g) {
     w(g, "package ");
-    w(g, g->options->package);
+    write_string(g, g->options->package);
     w(g, ";~N~N");
 
     if (g->java_import_arrays) {
@@ -1264,7 +1300,7 @@ static void generate_class_begin(struct generator * g) {
 
     if (g->analyser->amongs) {
         w(g, "import ");
-        w(g, g->options->among_class);
+        write_string(g, g->options->among_class);
         w(g, ";~N~N");
     }
 
@@ -1287,7 +1323,7 @@ static void generate_class_begin(struct generator * g) {
          "@SuppressWarnings(\"unused\")~N"
          "public class ~n extends ");
 
-    w(g, g->options->parent_class_name);
+    write_string(g, g->options->parent_class_name);
     w(g, " {~+~N"
          "~N"
          "~Mprivate static final long serialVersionUID = 1L;~N");
@@ -1307,13 +1343,13 @@ static void generate_equals(struct generator * g) {
          "~M@Override~N"
          "~Mpublic boolean equals( Object o ) {~N"
          "~+~Mreturn o instanceof ");
-    w(g, g->options->name);
+    write_s(g, g->options->name);
     w(g, ";~N~-~M}~N"
          "~N"
          "~M@Override~N"
          "~Mpublic int hashCode() {~N"
          "~+~Mreturn ");
-    w(g, g->options->name);
+    write_s(g, g->options->name);
     w(g, ".class.getName().hashCode();~N"
          "~-~M}~N");
 }
@@ -1384,6 +1420,7 @@ static void generate_members(struct generator * g) {
     int wrote_members = false;
 
     for (struct name * q = g->analyser->names; q; q = q->next) {
+        if (q->local_to) continue;
         switch (q->type) {
             case t_string:
                 w(g, "~Mprivate char[] ");
