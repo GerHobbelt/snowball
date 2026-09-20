@@ -114,7 +114,7 @@ static void wgotol(struct generator * g, int n) {
     write_margin(g);
     write_string(g, "break lab");
     write_int(g, n);
-    write_string(g, ";");
+    write_char(g, ';');
     write_newline(g);
     g->unreachable = true;
 }
@@ -133,7 +133,7 @@ static void write_failure(struct generator * g) {
         default:
             write_string(g, "break lab");
             write_int(g, g->failure_label);
-            write_string(g, ";");
+            write_char(g, ';');
     }
     write_newline(g);
     g->unreachable = true;
@@ -297,7 +297,7 @@ static void generate_bra(struct generator * g, struct node * p) {
 
 static void generate_and(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed_for_connective(g, p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -322,7 +322,7 @@ static void generate_and(struct generator * g, struct node * p) {
 
 static void generate_or(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed_for_connective(g, p->left)) {
         savevar = vars_newname(g);
     }
 

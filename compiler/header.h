@@ -256,9 +256,11 @@ struct amongvec {
     struct node * action; /* the corresponding action */
     int i;           /* the amongvec index of the longest substring of b */
     int result;      /* the numeric result for the case */
-    int line_number; /* for diagnostics and stable sorting */
+    int line_number; /* for diagnostics */
     int function_index; /* 1-based */
-    int string_index; /* 0-based index giving order of strings in source */
+    // 0-based index giving order of strings in source.  Used for stable
+    // sorting of amongvec entries and -coverage.
+    int string_index;
     struct name * function;
 };
 
@@ -490,6 +492,7 @@ extern void write_start_comment(struct generator * g,
                                 const char * comment_end);
 
 extern int K_needed(struct generator * g, struct node * p);
+extern int K_needed_for_connective(struct generator * g, struct node * p);
 extern int repeat_restore(struct generator * g, struct node * p);
 
 extern int just_return_on_fail(struct generator * g);

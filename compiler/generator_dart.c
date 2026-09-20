@@ -41,7 +41,7 @@ static void write_literal_string(struct generator * g, symbol * p) {
     for (int i = 0; i < SIZE(p); i++) {
         int ch = p[i];
         if (32 <= ch && ch < 127) {
-            if (ch == '"' || ch == '\\' || ch == '$') write_string(g, "\\");
+            if (ch == '"' || ch == '\\' || ch == '$') write_char(g, '\\');
             write_char(g, ch);
         } else {
             write_string(g, "\\u");
@@ -79,7 +79,7 @@ static void append_restore_string(struct node * p, struct str * out, struct str 
     str_append_string(out, "cursor = ");
     if (p->mode != m_forward) str_append_string(out, "limit - ");
     str_append(out, savevar);
-    str_append_string(out, ";");
+    str_append_ch(out, ';');
 }
 
 static void write_restorecursor(struct generator * g, struct node * p, struct str * savevar) {
@@ -115,7 +115,7 @@ static void wgotol(struct generator * g, int n) {
     write_margin(g);
     write_string(g, "break lab");
     write_int(g, n);
-    write_string(g, ";");
+    write_char(g, ';');
     write_newline(g);
     g->unreachable = true;
 }
@@ -134,7 +134,7 @@ static void write_failure(struct generator * g) {
         default:
             write_string(g, "break lab");
             write_int(g, g->failure_label);
-            write_string(g, ";");
+            write_char(g, ';');
     }
     write_newline(g);
     g->unreachable = true;
@@ -330,7 +330,7 @@ static void generate_bra(struct generator * g, struct node * p) {
 
 static void generate_and(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed_for_connective(g, p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -355,7 +355,7 @@ static void generate_and(struct generator * g, struct node * p) {
 
 static void generate_or(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed_for_connective(g, p->left)) {
         savevar = vars_newname(g);
     }
 

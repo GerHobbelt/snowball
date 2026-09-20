@@ -58,7 +58,7 @@ static void write_literal_string(struct generator * g, symbol * p) {
     write_char(g, '"');
     for (int i = 0; i < SIZE(p); i++) {
         int ch = p[i];
-        if (32 <= ch && ch < 0x590 && ch != 127) {
+        if ((32 <= ch && ch < 127) || (0xa0 < ch && ch < 0x590)) {
             if (ch == '"' || ch == '\\') write_char(g, '\\');
             // Our Python generator uses ENC_WIDECHARS so we need to convert.
             write_wchar_as_utf8(g, ch);
@@ -329,7 +329,7 @@ static void generate_bra(struct generator * g, struct node * p) {
 
 static void generate_and(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed_for_connective(g, p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -354,7 +354,7 @@ static void generate_and(struct generator * g, struct node * p) {
 
 static void generate_or(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed_for_connective(g, p->left)) {
         savevar = vars_newname(g);
     }
 

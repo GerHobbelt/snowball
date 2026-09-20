@@ -84,25 +84,50 @@ static void write_varref(struct generator * g, struct name * p) {
 }
 
 static void write_literal_string(struct generator * g, symbol * p) {
+    if (SIZE(p) == 0) {
+        write_string(g, "\"\"");
+        return;
+    }
     // Ada supports UTF-8 literal strings, we only need to escape the quote and
     // special characters.
-    write_char(g, '"');
-    for (int i = 0; i < SIZE(p); i++) {
-        int ch = p[i];
-        if (ch == '"') {
-            write_string(g, "\"\"");
-        } else if (ch < 32 || ch == 127) {
-            write_string(g, "\" & Character'Val(");
-            write_int(g, (int)p[i]);
-            write_string(g, ") & \"");
-        } else if (ch <= 255) {
-            write_char(g, ch);
+    int in_quotes = false;
+    int i = 0;
+    while (i < SIZE(p)) {
+        int ch;
+        int w = get_utf8(p + i, &ch);
+        // Write out ASCII and lower Unicode printables as literal characters.
+        // Use escapes for anything over 0x590 as a crude way to avoid LTR
+        // characters affecting the rendering of source character order in
+        // confusing ways.
+        if ((32 <= ch && ch < 127) || (0xa0 < ch && ch < 0x590)) {
+            if (!in_quotes) {
+                if (i > 0) {
+                    write_string(g, " & ");
+                }
+                write_char(g, '"');
+                in_quotes = true;
+            }
+            if (ch == '"') write_char(g, '\\');
+            write_wchar_as_utf8(g, ch);
         } else {
-            printf("In write_literal_string, can't convert p[%d] to char because it's 0x%02x\n", i, (int)p[i]);
-            exit(1);
+            if (in_quotes) {
+                write_char(g, '"');
+                in_quotes = false;
+            }
+            for (int j = i; j < i + w; ++j) {
+                if (j > 0) {
+                    write_string(g, " & ");
+                }
+                write_string(g, "Character'Val(");
+                write_int(g, (int)p[j]);
+                write_string(g, ")");
+            }
         }
+        i += w;
     }
-    write_char(g, '"');
+    if (in_quotes) {
+        write_char(g, '"');
+    }
 }
 
 /* Write a variable declaration. */
@@ -113,7 +138,7 @@ static void write_declare(struct generator * g,
     g->outbuf = g->declarations;
     write_string(g, "      ");
     writef(g, declaration, p);
-    write_string(g, ";");
+    write_char(g, ';');
     write_newline(g);
     g->outbuf = temp;
 }
@@ -147,7 +172,7 @@ static void append_restore_string(struct node * p, struct str * out, struct str 
     str_append_string(out, "Z.C := ");
     if (p->mode != m_forward) str_append_string(out, "Z.L - ");
     str_append(out, savevar);
-    str_append_string(out, ";");
+    str_append_ch(out, ';');
 }
 
 static void write_restorecursor(struct generator * g, struct node * p, struct str * savevar) {
@@ -182,7 +207,7 @@ static void write_failure(struct generator * g) {
         default:
             write_string(g, "goto lab");
             write_int(g, g->failure_label);
-            write_string(g, ";");
+            write_char(g, ';');
             g->label_used = 1;
     }
     write_newline(g);
@@ -362,7 +387,7 @@ static void generate_bra(struct generator * g, struct node * p) {
 
 static void generate_and(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed_for_connective(g, p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -387,7 +412,7 @@ static void generate_and(struct generator * g, struct node * p) {
 
 static void generate_or(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed_for_connective(g, p->left)) {
         savevar = vars_newname(g);
     }
 

@@ -60,21 +60,32 @@ static void write_varname(struct generator * g, struct name * p) {
 }
 
 static void write_literal_string(struct generator * g, symbol * p) {
-    write_char(g, '\'');
+    if (SIZE(p) == 0) {
+        write_string(g, "''");
+        return;
+    }
+    int in_quotes = false;
     for (int i = 0; i < SIZE(p); i++) {
         int ch = p[i];
-        if (ch == '\'') {
-            write_string(g, "''");
-        } else if (32 <= ch && ch < 127) {
+        if (32 <= ch && ch < 127) {
+            if (!in_quotes) {
+                write_char(g, '\'');
+                in_quotes = true;
+            }
+            if (ch == '\'') write_char(g, '\'');
             write_char(g, ch);
         } else {
-            write_char(g, '\'');
+            if (in_quotes) {
+                write_char(g, '\'');
+                in_quotes = false;
+            }
             write_char(g, '#');
-            write_int (g, ch);
-            write_char(g, '\'');
+            write_int(g, ch);
         }
     }
-    write_char(g, '\'');
+    if (in_quotes) {
+        write_char(g, '\'');
+    }
 }
 
 /* Write a variable declaration. */
@@ -85,7 +96,7 @@ static void write_declare(struct generator * g,
     g->outbuf = g->declarations;
     write_string(g, "    ");
     writef(g, declaration, p);
-    write_string(g, ";");
+    write_char(g, ';');
     write_newline(g);
     g->outbuf = temp;
 }
@@ -119,7 +130,7 @@ static void append_restore_string(struct node * p, struct str * out, struct str 
     str_append_string(out, "FCursor := ");
     if (p->mode != m_forward) str_append_string(out, "FLimit - ");
     str_append(out, savevar);
-    str_append_string(out, ";");
+    str_append_ch(out, ';');
 }
 
 static void write_restorecursor(struct generator * g, struct node * p, struct str * savevar) {
@@ -154,7 +165,7 @@ static void write_failure(struct generator * g) {
         default:
             write_string(g, "goto lab");
             write_int(g, g->failure_label);
-            write_string(g, ";");
+            write_char(g, ';');
             g->label_used = 1;
     }
     write_newline(g);
@@ -320,7 +331,7 @@ static void generate_bra(struct generator * g, struct node * p) {
 
 static void generate_and(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed_for_connective(g, p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -345,7 +356,7 @@ static void generate_and(struct generator * g, struct node * p) {
 
 static void generate_or(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed_for_connective(g, p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -397,7 +408,7 @@ static void generate_or(struct generator * g, struct node * p) {
 
     generate(g, p);
 
-    w(g, "~MUntil True;~N");
+    w(g, "~-~MUntil True;~N");
     if (!end_unreachable) {
         g->unreachable = false;
     }

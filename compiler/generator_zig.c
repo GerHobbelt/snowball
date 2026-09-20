@@ -44,14 +44,14 @@ static void write_literal_string(struct generator * g, symbol * p) {
     while (i < SIZE(p)) {
         int ch;
         i += get_utf8(p + i, &ch);
-        if (32 <= ch && ch < 0x590 && ch != 127) {
+        // Write out ASCII and lower Unicode printables as literal characters.
+        // Use escapes for anything over 0x590 as a crude way to avoid LTR
+        // characters affecting the rendering of source character order in
+        // confusing ways.
+        if ((32 <= ch && ch < 127) || (0xa0 < ch && ch < 0x590)) {
             if (ch == '"' || ch == '\\') write_char(g, '\\');
             write_wchar_as_utf8(g, ch);
         } else {
-            // Use escapes for anything over 0x590 as a crude way to avoid
-            // LTR characters affecting the rendering of source character
-            // order in confusing ways.
-            //
             // Zig Unicode escape are variable width: \u{XXXX}
             write_string(g, "\\u{");
             write_hex(g, ch);
@@ -89,7 +89,7 @@ static void append_restore_string(struct node * p, struct str * out, struct str 
     str_append_string(out, "env.cursor = ");
     if (p->mode != m_forward) str_append_string(out, "env.limit - ");
     str_append(out, savevar);
-    str_append_string(out, ";");
+    str_append_ch(out, ';');
 }
 
 static void write_restorecursor(struct generator * g, struct node * p, struct str * savevar) {
@@ -136,7 +136,7 @@ static void write_failure(struct generator * g) {
         default:
             w(g, "~Mbreak :lab");
             write_int(g, g->failure_label);
-            w(g, ";");
+            write_char(g, ';');
     }
     write_newline(g);
     g->unreachable = true;
@@ -317,7 +317,7 @@ static void generate_bra(struct generator * g, struct node * p) {
 
 static void generate_and(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed_for_connective(g, p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -342,7 +342,7 @@ static void generate_and(struct generator * g, struct node * p) {
 
 static void generate_or(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed_for_connective(g, p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -888,11 +888,11 @@ static void generate_setlimit(struct generator * g, struct node * p) {
         if (p->mode == m_forward) {
             str_assign(g->failure_str, "env.limit += ");
             str_append(g->failure_str, varname);
-            str_append_string(g->failure_str, ";");
+            str_append_ch(g->failure_str, ';');
         } else {
             str_assign(g->failure_str, "env.limit_backward = ");
             str_append(g->failure_str, varname);
-            str_append_string(g->failure_str, ";");
+            str_append_ch(g->failure_str, ';');
         }
     } else {
         struct str * savevar = vars_newname(g);
@@ -914,11 +914,11 @@ static void generate_setlimit(struct generator * g, struct node * p) {
             if (p->mode == m_forward) {
                 str_assign(g->failure_str, "env.limit += ");
                 str_append(g->failure_str, varname);
-                str_append_string(g->failure_str, ";");
+                str_append_ch(g->failure_str, ';');
             } else {
                 str_assign(g->failure_str, "env.limit_backward = ");
                 str_append(g->failure_str, varname);
-                str_append_string(g->failure_str, ";");
+                str_append_ch(g->failure_str, ';');
             }
         }
         str_delete(savevar);

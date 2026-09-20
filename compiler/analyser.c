@@ -36,15 +36,19 @@ extern void print_program(struct analyser * a) {
     if (a->program) print_node_(a->program, 0, "");
 }
 
-static struct node * new_node(struct analyser * a, int type) {
+static struct node * new_node_at_line(struct analyser * a, int type, int line) {
     NEW(node, p);
     *p = (struct node){0};
     p->mode = a->mode;
-    p->line_number = a->tokeniser->line_number;
+    p->line_number = line;
     p->type = type;
     p->next = a->nodes;
     a->nodes = p;
     return p;
+}
+
+static struct node * new_node(struct analyser * a, int type) {
+    return new_node_at_line(a, type, a->tokeniser->line_number);
 }
 
 static const char * name_of_mode(int n) {
@@ -75,10 +79,15 @@ static void count_error(struct analyser * a) {
     t->error_count++;
 }
 
-static void report_error_location(struct analyser * a) {
+static void report_error_location_line(struct analyser * a, int line) {
     struct tokeniser * t = a->tokeniser;
     count_error(a);
-    fprintf(stderr, "%s:%d: ", t->file, t->line_number);
+    fprintf(stderr, "%s:%d: ", t->file, line);
+}
+
+static void report_error_location(struct analyser * a) {
+    struct tokeniser * t = a->tokeniser;
+    report_error_location_line(a, t->line_number);
 }
 
 static void report_error_after(struct analyser * a) {
@@ -334,7 +343,9 @@ static struct node * read_AE(struct analyser * a, struct name * assigned_to, int
     struct node * p;
     struct node * q;
     switch (read_token(t)) {
-        case c_minus: /* monadic */
+        case c_minus: { /* monadic */
+            // Note current line number so c_neg node reports the right line.
+            int neg_line = a->tokeniser->line_number;
             q = read_AE(a, assigned_to, 100);
             if (q->type == c_neg) {
                 /* Optimise away double negation, which avoids generators
@@ -351,9 +362,10 @@ static struct node * read_AE(struct analyser * a, struct name * assigned_to, int
                 p = q;
                 break;
             }
-            p = new_node(a, c_neg);
+            p = new_node_at_line(a, c_neg, neg_line);
             p->right = q;
             break;
+        }
         case c_bra:
             p = read_AE(a, assigned_to, 0);
             get_token(a, c_ket);
@@ -417,40 +429,38 @@ static struct node * read_AE(struct analyser * a, struct name * assigned_to, int
     }
     while (true) {
         int token = read_token(t);
+        int op_line = t->line_number;
         int b = binding(token);
         if (binding(token) <= B) {
             hold_token(t);
             return p;
         }
         struct node * r = read_AE(a, assigned_to, b);
-        if (p->type == c_number && r->type == c_number) {
+        if (p->type == c_number &&
+            r->type == c_number &&
+            // Can't evaluate division by zero.
+            !(token == c_divide && r->number == 0)) {
             // Evaluate constant sub-expression.
-            q = new_node(a, c_number);
+            q = p;
             switch (token) {
                 case c_plus:
-                    q->number = p->number + r->number;
+                    q->number += r->number;
                     break;
                 case c_minus:
-                    q->number = p->number - r->number;
+                    q->number -= r->number;
                     break;
                 case c_multiply:
-                    q->number = p->number * r->number;
+                    q->number *= r->number;
                     break;
                 case c_divide:
-                    if (r->number == 0) {
-                        fprintf(stderr, "%s:%d: Division by zero\n",
-                                t->file, t->line_number);
-                        exit(1);
-                    }
-                    q->number = p->number / r->number;
+                    q->number /= r->number;
                     break;
                 default:
                     fprintf(stderr, "Unexpected AE operator %s\n",
                             name_of_token(token));
                     exit(1);
             }
-            q->fixed_constant = p->fixed_constant && r->fixed_constant;
-            q->line_number = p->line_number;
+            q->fixed_constant = q->fixed_constant && r->fixed_constant;
         } else {
             // Check for specific constant or no-op cases.
             q = NULL;
@@ -470,7 +480,7 @@ static struct node * read_AE(struct analyser * a, struct name * assigned_to, int
                 case c_minus:
                     // 0 - r is -r
                     if (p->type == c_number && p->number == 0) {
-                        q = new_node(a, c_neg);
+                        q = new_node_at_line(a, c_neg, op_line);
                         q->right = r;
                         break;
                     }
@@ -489,27 +499,23 @@ static struct node * read_AE(struct analyser * a, struct name * assigned_to, int
                     // p * 0 is 0
                     if (r->type == c_number && r->number == 0) {
                         q = r;
-                        q->line_number = p->line_number;
                         break;
                     }
                     // -1 * r is -r
                     if (p->type == c_number && p->number == -1) {
-                        q = new_node(a, c_neg);
+                        q = new_node_at_line(a, c_neg, p->line_number);
                         q->right = r;
-                        q->line_number = p->line_number;
                         break;
                     }
                     // p * -1 is -p
                     if (r->type == c_number && r->number == -1) {
-                        q = new_node(a, c_neg);
+                        q = new_node_at_line(a, c_neg, r->line_number);
                         q->right = p;
-                        q->line_number = p->line_number;
                         break;
                     }
                     // 1 * r is r
                     if (p->type == c_number && p->number == 1) {
                         q = r;
-                        q->line_number = p->line_number;
                         break;
                     }
                     // p * 1 is p
@@ -526,21 +532,19 @@ static struct node * read_AE(struct analyser * a, struct name * assigned_to, int
                     }
                     // p / -1 is -p
                     if (r->type == c_number && r->number == -1) {
-                        q = new_node(a, c_neg);
+                        q = new_node_at_line(a, c_neg, r->line_number);
                         q->right = p;
-                        q->line_number = p->line_number;
                         break;
                     }
                     // p / 0 is an error!
                     if (r->type == c_number && r->number == 0) {
-                        fprintf(stderr, "%s:%d: Division by zero\n",
-                                t->file, t->line_number);
-                        exit(1);
+                        report_error_location_line(a, op_line);
+                        fprintf(stderr, "Division by zero\n");
                     }
                     break;
             }
             if (!q) {
-                q = new_node(a, token);
+                q = new_node_at_line(a, token, op_line);
                 q->left = p;
                 q->right = r;
             }
@@ -549,17 +553,72 @@ static struct node * read_AE(struct analyser * a, struct name * assigned_to, int
     }
 }
 
-static struct node * read_C_connection(struct analyser * a, struct node * q, int op) {
+static struct node * read_or(struct analyser * a, struct node * n) {
     struct tokeniser * t = a->tokeniser;
-    struct node * p = new_node(a, op);
-    struct node * p_end = q;
-    p->left = q;
+    // Note current line number so c_or node reports the right line.
+    int or_line = t->line_number;
+    struct node * p = n->type == c_false ? NULL : n;
+    struct node * p_end = p;
     do {
-        q = read_C(a);
-        p_end->right = q; p_end = q;
-    } while (read_token(t) == op);
+        struct node * q = read_C(a);
+        // Discard `false` nodes in an `or` chain.
+        if (q->type != c_false) {
+            if (p_end) {
+                p_end->right = q;
+            } else {
+                p = q;
+            }
+            p_end = q;
+        }
+    } while (read_token(t) == c_or);
     hold_token(t);
-    return p;
+    if (p == NULL) {
+        // All sub-nodes are `false` so return the first.
+        return n;
+    } else if (p->right == NULL) {
+        return p;
+    }
+    n = new_node_at_line(a, c_or, or_line);
+    n->left = p;
+    return n;
+}
+
+static int
+is_just_true(struct node * q)
+{
+    if (!q) return 1;
+    if (q->type != c_bra && q->type != c_true) return 0;
+    return is_just_true(q->left) && is_just_true(q->right);
+}
+
+static struct node * read_and(struct analyser * a, struct node * n) {
+    struct tokeniser * t = a->tokeniser;
+    // Note current line number so c_and node reports the right line.
+    int and_line = t->line_number;
+    struct node * p = is_just_true(n) ? NULL : n;
+    struct node * p_end = p;
+    do {
+        struct node * q = read_C(a);
+        // Discard nodes equivalent to `true` in an `and` chain.
+        if (!is_just_true(q)) {
+            if (p_end) {
+                p_end->right = q;
+            } else {
+                p = q;
+            }
+            p_end = q;
+        }
+    } while (read_token(t) == c_and);
+    hold_token(t);
+    if (p == NULL) {
+        // Note: is_just_true(n).
+        return n;
+    } else if (p->right == NULL) {
+        return p;
+    }
+    n = new_node_at_line(a, c_and, and_line);
+    n->left = p;
+    return n;
 }
 
 static struct node * read_C_list(struct analyser * a) {
@@ -575,11 +634,14 @@ static struct node * read_C_list(struct analyser * a) {
         struct node * q = read_C(a);
         while (true) {
             token = read_token(t);
-            if (token != c_and && token != c_or) {
+            if (token == c_or) {
+                q = read_or(a, q);
+            } else if (token == c_and) {
+                q = read_and(a, q);
+            } else {
                 hold_token(t);
                 break;
             }
-            q = read_C_connection(a, q, token);
         }
         if (p_end == NULL) p->left = q; else p_end->right = q;
         p_end = q;
@@ -627,7 +689,7 @@ static int compare_amongvec(const void *pv, const void *qv) {
         if (b_p[i] != b_q[i]) return b_p[i] - b_q[i];
     if (p_size - q_size)
         return p_size - q_size;
-    return p->line_number - q->line_number;
+    return p->string_index - q->string_index;
 }
 
 #define nodes_equivalent(P, Q) \
@@ -811,11 +873,11 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
 
     if (starter) {
         starter->right = p;
-        p = new_node(a, c_bra);
+        p = new_node_at_line(a, c_bra, starter->line_number);
         if (substring) {
             p->left = starter;
         } else {
-            substring = new_node(a, c_substring);
+            substring = new_node_at_line(a, c_substring, starter->line_number);
             substring->right = starter;
             p->left = substring;
         }
@@ -851,7 +913,7 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
                 // becomes:
                 //
                 // S ... true
-                p = new_node(a, c_true);
+                p = new_node_at_line(a, c_true, v[0].line_number);
             }
         } else {
             if (v[0].action) {
@@ -906,14 +968,6 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
     a->amongs_end = x;
 
     return p;
-}
-
-static int
-is_just_true(struct node * q)
-{
-    if (!q) return 1;
-    if (q->type != c_bra && q->type != c_true) return 0;
-    return is_just_true(q->left) && is_just_true(q->right);
 }
 
 static struct node * read_among(struct analyser * a) {
@@ -1288,6 +1342,7 @@ static struct node * read_C(struct analyser * a) {
             return n;
         }
         case c_dollar: {
+            int dollar_line = t->line_number;
             read_token(t);
             if (t->token == c_bra) {
                 /* Handle newer $(AE REL_OP AE) syntax. */
@@ -1296,9 +1351,8 @@ static struct node * read_C(struct analyser * a) {
                 token = t->token;
                 switch (token) {
                     case c_assign:
-                        count_error(a);
-                        fprintf(stderr, "%s:%d: Expected relational operator (did you mean '=='?)\n",
-                                t->file, t->line_number);
+                        report_error_location(a);
+                        fprintf(stderr, "Expected relational operator (did you mean '=='?)\n");
                         // Assume it was == to try to avoid an error avalanche.
                         token = c_eq;
                         /* FALLTHRU */
@@ -1359,7 +1413,7 @@ static struct node * read_C(struct analyser * a) {
             if (t->token != c_name) {
                 unexpected_token_error(a, "integer test expression");
                 hold_token(t);
-                return new_node(a, c_dollar);
+                return new_node_at_line(a, c_dollar, dollar_line);
             }
 
             struct name * q = find_name(a);
@@ -1369,7 +1423,7 @@ static struct node * read_C(struct analyser * a) {
                  */
                 q->initialised = true;
                 q->value_used = true;
-                struct node * p = new_node(a, c_dollar);
+                struct node * p = new_node_at_line(a, c_dollar, dollar_line);
                 int mode = a->mode;
                 int modifyable = a->modifyable;
                 a->mode = m_forward;
@@ -1443,13 +1497,17 @@ static struct node * read_C(struct analyser * a) {
                             p->name = NULL;
                             p->AE = NULL;
                         } else if (p->AE->number == 0) {
-                            if (p->type == c_divide) {
-                                fprintf(stderr, "%s:%d: Division by zero\n",
-                                        t->file, t->line_number);
-                                exit(1);
+                            if (p->type == c_divideassign) {
+                                report_error_location_line(a, p->line_number);
+                                fprintf(stderr, "Division by zero\n");
+                                // Set the largest possible value.
+                                p->type = c_maxint;
+                                p->name = NULL;
+                                p->AE = NULL;
+                            } else {
+                                // `$x*=0` -> `$x=0`
+                                p->type = c_mathassign;
                             }
-                            // `$x*=0` -> `$x=0`
-                            p->type = c_mathassign;
                         } else if (p->AE->number == -1) {
                             // `$x/=-1` -> `$x*=-1`
                             p->type = c_multiplyassign;
@@ -2115,10 +2173,17 @@ static int check_possible_signals(struct analyser * a, struct node * p) {
             return 1;
         case c_repeat: {
             int possible_signals = p->left->possible_signals;
-            if (possible_signals != -1) {
-            fprintf(stderr, "%s:%d: warning: body of 'repeat' always signals '%c'\n",
-                    a->tokeniser->file, p->line_number,
-                    possible_signals ? 't' : 'f');
+            if (possible_signals == 1) {
+                fprintf(stderr, "%s:%d: warning: infinite loop: body of 'repeat' always signals 't'\n",
+                        a->tokeniser->file, p->line_number);
+                // Any code after this is unreachable.
+                // FIXME: This only prunes the rest of this command list - we
+                // want to prune anything that's only reachable from here.
+                p->right = NULL;
+            } else if (possible_signals == 0) {
+                fprintf(stderr, "%s:%d: warning: body of 'repeat' always signals 'f'\n",
+                        a->tokeniser->file, p->line_number);
+                p->type = c_do;
             }
             /* Always gives signal t. */
             return 1;
@@ -2188,10 +2253,18 @@ static int check_possible_signals(struct analyser * a, struct node * p) {
             return p->left->possible_signals;
         case c_atleast: {
             int possible_signals = p->left->possible_signals;
-            if (possible_signals != -1) {
-            fprintf(stderr, "%s:%d: warning: body of 'atleast' always signals '%c'\n",
-                    a->tokeniser->file, p->line_number,
-                    possible_signals ? 't' : 'f');
+            if (possible_signals == 1) {
+                fprintf(stderr, "%s:%d: warning: infinite loop: body of 'atleast' always signals 't'\n",
+                        a->tokeniser->file, p->line_number);
+                // Any code after this is unreachable.
+                // FIXME: This only prunes the rest of this command list - we
+                // want to prune anything that's only reachable from here.
+                p->right = NULL;
+            } else if (possible_signals == 0) {
+                fprintf(stderr, "%s:%d: warning: body of 'atleast' always signals 'f'\n",
+                        a->tokeniser->file, p->line_number);
+                p->type = c_bra;
+                p->AE = NULL;
             }
             /* Give same signal as p->left. */
             return possible_signals;
@@ -2332,6 +2405,28 @@ static void visit_node(struct analyser * a, struct node * p) {
         }
 
         p->possible_signals = check_possible_signals(a, p);
+
+        if ((p->type == c_and || p->type == c_or) && !p->left->right) {
+            // Pruning of unreachable code can leave single-entry c_and and
+            // c_or nodes.  These can lead to unused variables in the generated
+            // code and may also hinder further optimisations.
+            //
+            // We want to replace these with their subnode.  It's fiddly to do
+            // an actual replacement as we'd need to update the location we got
+            // the current value of `p` from, so instead we swap the contents
+            // of the two nodes.  Note that we must not swap the existing ->next
+            // pointers as that could break the chain of all allocated nodes we
+            // have from analyser->nodes.
+            struct node * p_left = p->left;
+            struct node * p_right = p->right;
+            struct node * p_next = p->next;
+            struct node tmp = *p;
+            tmp.next = p_left->next;
+            *p = *p_left;
+            p->right = p_right;
+            p->next = p_next;
+            *p_left = tmp;
+        }
 
         p = p->right;
     }

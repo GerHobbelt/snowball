@@ -63,28 +63,52 @@ next_outer: ;
             }
         }
     }
+
+    symbol ch_max = 0xa0;
+    if (g->options->encoding == ENC_SINGLEBYTE) {
+        ch_max = 0xff;
+    }
+
+    int i = 0;
     write_char(g, '\'');
-    for (int i = 0; i < SIZE(s); ++i) {
-        symbol c = s[i];
-        if (c == '\'' || c == '{') {
+    while (i < SIZE(s)) {
+        int ch;
+        if (g->options->encoding == ENC_UTF8) {
+            i += get_utf8(s + i, &ch);
+        } else {
+            ch = s[i++];
+        }
+        if (ch == '\'' || ch == '{') {
             write_char(g, '{');
-            write_char(g, c);
+            write_char(g, ch);
             write_char(g, '}');
-        } else if (c < 32 || c == '\\' || c == 127) {
-            // In Java, `\u000a` in a comment is interpreted as a newline and
-            // so exits the comment, which `\uq` gives compilation error
-            // `illegal unicode escape`.  Since `\` is unusual in Snowball
-            // literal strings, we simply escape it as `{U+5C}` for all target
-            // languages.
+        } else if (ch < 32 ||
+                   (ch >= 127 && ch <= ch_max) ||
+                   ch == '\\' ||
+                   ch >= 0x590) {
+            // Encode characters which are problematic if emitted literally
+            // using Snowball-style `{U+xx}`:
+            //
+            // * Control characters.
+            //
+            // * For ENC_SINGLEBYTE we encode all non-ASCII to avoid invalid
+            //   UTF-8 in comments (which clang warns about for C/C++ with
+            //   option `-pedantic` or `-Winvalid-utf8`).
+            //
+            // * `\`: In Java, `\u000a` in a comment is interpreted as a
+            //   newline and so exits the comment, while `\uq` gives
+            //   compilation error `illegal unicode escape`.  Since `\` is
+            //   unusual in Snowball literal strings we take the simple
+            //   approach of escaping it for all target languages.
+            //
+            // * Anything >= 0x590 as a crude way to avoid LTR characters
+            //   affecting the rendering of source character order in confusing
+            //   ways.
             write_string(g, "{U+");
-            write_hex(g, c);
+            write_hex(g, ch);
             write_char(g, '}');
         } else {
-            if (g->options->encoding == ENC_WIDECHARS) {
-                write_wchar_as_utf8(g, s[i]);
-            } else {
-                write_char(g, s[i]);
-            }
+            write_wchar_as_utf8(g, ch);
         }
     }
     write_char(g, '\'');
@@ -242,7 +266,10 @@ extern void write_margin(struct generator * g) {
 static int K_needed_(struct node * p, int call_depth) {
     while (p) {
         switch (p->type) {
+            case c_assign:
+            case c_assignto:
             case c_atlimit:
+            case c_atmark:
             case c_do:
             case c_dollar:
             case c_leftslice:
@@ -268,6 +295,18 @@ static int K_needed_(struct node * p, int call_depth) {
             case c_debug:
             case c_functionend:
             case c_not:
+            case c_setmark:
+                // Doesn't change the cursor or always restores it.
+                break;
+
+            case c_attach:
+                // Cursor restored in backwards mode.
+                if (p->mode == m_backward) return true;
+                break;
+
+            case c_insert:
+                // Cursor restored in forwards mode.
+                if (p->mode == m_forward) return true;
                 break;
 
             case c_call:
@@ -283,7 +322,16 @@ static int K_needed_(struct node * p, int call_depth) {
                 break;
 
             case c_bra:
+            case c_loop:
+            case c_fail:
                 if (K_needed_(p->left, call_depth)) return true;
+                break;
+
+            case c_backwards:
+            case c_reverse:
+            case c_test:
+                if (p->possible_signals != 1) return true;
+                // Restores cursor on t and the subcommand can't fail.
                 break;
 
             default: return true;
@@ -296,6 +344,19 @@ static int K_needed_(struct node * p, int call_depth) {
 extern int K_needed(struct generator * g, struct node * p) {
     (void)g;
     return K_needed_(p, 0);
+}
+
+// Like K_needed(), but for the sub-node chain of c_and/c_or.  For both
+// of these, the cursor only needs to be restored between nodes so we don't
+// need to check the final node in the chain.
+extern int K_needed_for_connective(struct generator * g, struct node * p) {
+    while (p->right) {
+        if (K_needed(g, p)) {
+            return true;
+        }
+        p = p->right;
+    }
+    return false;
 }
 
 static int repeat_score(struct generator * g, struct node * p, int call_depth) {
