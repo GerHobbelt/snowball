@@ -13,6 +13,11 @@ static void writef(struct generator * g, const char * s, struct node * p);
 
 /* Write routines for items from the syntax tree */
 
+static void write_relop(struct generator * g, int relop) {
+    // Relational operators are the same as C.
+    write_c_relop(g, relop);
+}
+
 static void write_varname(struct generator * g, struct name * p) {
     // We use the same naming scheme for both global and local variables.
     write_char(g, "SbirrG"[p->type]);
@@ -842,13 +847,17 @@ static void generate_setlimit(struct generator * g, struct node * p) {
 
         g->B[0] = str_data(varname);
         if (p->mode == m_forward) {
-            w(g, "~Mvar ~B0 = env.Limit - env.Cursor~N");
+            w(g, "~Mvar ~B0 = env.Limit~N");
             w(g, "~Menv.Limit = ");
+            generate_AE(g, q->AE);
+            w(g, "~N");
+            w(g, "~M~B0 -= env.Limit~N");
         } else {
             w(g, "~Mvar ~B0 = env.LimitBackward~N");
             w(g, "~Menv.LimitBackward = ");
+            generate_AE(g, q->AE);
+            w(g, "~N");
         }
-        generate_AE(g, q->AE); writef(g, "~N", q);
 
         if (p->mode == m_forward) {
             str_assign(g->failure_str, "env.Limit += ");
@@ -969,8 +978,7 @@ static void generate_integer_test(struct generator * g, struct node * p) {
         relop ^= 1;
     }
     generate_AE(g, p->left);
-    // Relational operators are the same as C.
-    write_c_relop(g, relop);
+    write_relop(g, relop);
     generate_AE(g, p->AE);
     if (optimise_to_return) {
         w(g, "~N");

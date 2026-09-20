@@ -15,6 +15,10 @@ static void writef(struct generator * g, const char * s, struct node * p);
 
 /* Write routines for items from the syntax tree */
 
+static void write_relop(struct generator * g, int relop) {
+    write_c_relop(g, relop);
+}
+
 static void write_varname(struct generator * g, struct name * p) {
     if (p->type == t_external) {
         if (g->options->target_lang == LANG_CPLUSPLUS) {
@@ -40,8 +44,9 @@ static void write_varname(struct generator * g, struct name * p) {
 
 /* Reference to variable, e.g. when assigning to or using in an expression. */
 static void write_varref(struct generator * g, struct name * p) {
-    if (p->type < t_routine && p->local_to == NULL)
+    if (p->type < t_routine && p->local_to == NULL) {
         write_string(g, "((SN_local *)z)->");
+    }
     write_varname(g, p);
 }
 
@@ -960,14 +965,15 @@ static void generate_setlimit(struct generator * g, struct node * p) {
         w(g, "~Mif (z->c ~S0 "); generate_AE(g, q->AE); writef(g, ") ~f~N", q);
 
         g->B[0] = str_data(varname);
-        w(g, "~M~B0 = ");
         if (p->mode == m_forward) {
-            w(g, "z->l - z->c; z->l = ");
+            w(g, "~M~B0 = z->l; z->l = ");
+            generate_AE(g, q->AE);
+            w(g, "; ~B0 -= z->l;~N");
         } else {
-            w(g, "z->lb; z->lb = ");
+            w(g, "~M~B0 = z->lb; z->lb = ");
+            generate_AE(g, q->AE);
+            w(g, ";~N");
         }
-        generate_AE(g, q->AE);
-        w(g, ";~N");
 
         if (p->mode == m_forward) {
             str_assign(g->failure_str, "z->l += ");
@@ -983,6 +989,7 @@ static void generate_setlimit(struct generator * g, struct node * p) {
         extra_block = true;
         struct str * savevar = vars_newname(g);
         write_savecursor(g, p, savevar);
+
         generate(g, p->left);
 
         g->B[0] = str_data(varname);
@@ -1096,7 +1103,7 @@ static void generate_integer_test(struct generator * g, struct node * p) {
         relop ^= 1;
     }
     generate_AE(g, p->left);
-    write_c_relop(g, relop);
+    write_relop(g, relop);
     generate_AE(g, p->AE);
     if (optimise_to_return) {
         writef(g, ";~N", p);
@@ -1338,6 +1345,10 @@ static void generate_substring(struct generator * g, struct node * p) {
     }
 
     int pre_check = (block != -1 || n_cases <= 2);
+    if (g->options->coverage) {
+        // Don't shortcut if generating coverage.
+        pre_check = false;
+    }
     if (pre_check) {
         char buf[64];
         g->I[2] = block;
@@ -1742,6 +1753,9 @@ static void generate_among_table(struct generator * g, struct among * x) {
     }
 
     g->I[1] = x->literalstring_count;
+    if (g->options->coverage) {
+        g->I[1] = g->I[1] * 2 + 1;
+    }
     w(g, "~Mstatic const struct among a_~I0[~I1] = {~N");
 
     for (int i = 0; i < x->literalstring_count; i++) {
@@ -1762,6 +1776,26 @@ static void generate_among_table(struct generator * g, struct among * x) {
             w(g, "s_~I0_~I1,");
         }
         w(g, " ~I3, ~I4, ~I5}");
+    }
+    if (g->options->coverage) {
+        w(g, ",~N");
+        g->S[1] = g->analyser->tokeniser->file;
+        for (int i = 0; i < x->literalstring_count; i++) {
+            if (g->options->comments) {
+                w(g, "/* coverage */ ");
+            }
+            g->I[1] = x->b[i].line_number;
+            g->I[2] = x->b[i].string_index;
+            w(g, "{ ~I0, (const symbol*)\"~S1:~I1\", 0, ~I2, 0 },~N");
+        }
+        if (x->always_matches) {
+            g->I[0] = -1;
+        }
+        if (g->options->comments) {
+            w(g, "/* coverage */ ");
+        }
+        g->I[1] = x->node->line_number;
+        w(g, "{ ~I0, (const symbol*)\"~S1:~I1\", 0, 0, 0 },~N");
     }
     w(g, "~N};~N");
 
@@ -1813,6 +1847,17 @@ static void generate_grouping_table(struct generator * g, struct grouping * q) {
     for (int i = 0; i < size; i++) {
         if (i) w(g, ", ");
         write_int(g, map[i]);
+    }
+    if (g->options->coverage) {
+        char buf[1024];
+        checked_snprintf(buf, sizeof(buf), "%s:%d: grouping %.*s",
+                         g->analyser->tokeniser->file, q->line_number,
+                         SIZE(q->name->s), q->name->s);
+        for (const char * p = buf; *p; ++p) {
+            w(g, ", ");
+            wlitch(g, (int)*p);
+        }
+        w(g, ", '\\0'");
     }
     w(g, " };~N");
 
@@ -1896,7 +1941,7 @@ static void generate_close(struct generator * g) {
     w(g, "~Nextern void ~pclose_env(struct SN_env * z) {~N~+");
 
     if (g->analyser->name_count[t_string] > 0) {
-        w(g, "~Mif (z) {~N~+");
+        w(g, "~Mif (!z) return;~N");
 
         for (struct name * name = g->analyser->names; name; name = name->next) {
             if (!name->local_to && name->type == t_string) {
@@ -1905,10 +1950,9 @@ static void generate_close(struct generator * g) {
                 w(g, ");~N");
             }
         }
-
-        w(g, "~-~M}~N");
     }
 
+    // Note: SN_delete_env() no-ops if z is NULL so we don't to gate this call.
     w(g, "~MSN_delete_env(z);~N"
          "~-}~N~N");
 }
@@ -2137,6 +2181,9 @@ static void generate_header_file(struct generator * g) {
         write_string(g, "::");
         write_s(g, o->name);
         write_string(g, "::");
+        if (g->options->externals_prefix) {
+            write_string(g, g->options->externals_prefix);
+        }
         w(g, "stem(z);~N"
              "~Mreturn std::string(reinterpret_cast<const char*>(z->p), SIZE(z->p));~N"
              "~-~M}~N"

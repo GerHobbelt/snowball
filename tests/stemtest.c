@@ -1,4 +1,24 @@
 /* Unit tests for handling of cases the vocabularies don't cover.
+ *
+ * In general we test the stemming algorithms via vocabulary lists
+ * and corresponding lists of expected stems, which are in the snowball-data
+ * repo.  These are used to verify that each stemmer produces the expected
+ * output for all the different programming languages Snowball can generate
+ * code for (whereas testcases here only exercise the C stemmers).
+ *
+ * Test coverage for a change to a stemmer's behaviour should generally be
+ * implemented by adding new words its the vocabulary (if words already there
+ * don't adequately cover the change).
+ *
+ * Only cases which can't be exercised by real words in the language being
+ * stemmed should go here.  Each vocabulary lists also serves as a sample
+ * vocabulary for evalutating its corresponding stemmer, so we don't want to
+ * add entries which would be junk for such use (such as emoji, numbers, hex
+ * codes, etc).
+ *
+ * Testcases here can run for a specified stemmer or for all stemmers.  This
+ * provides an easy way to test behaviours which any good stemmer should
+ * have (such as not mangling numbers).
  */
 
 #include <stdio.h>
@@ -28,8 +48,12 @@ static const struct testcase {
     // The Finnish stemmer used to damage numbers ending with two or more of
     // the same digit.  Regression test, applied to all stemmers.
     // https://github.com/snowballstem/snowball/issues/66
-    { 0, 0, "2000", 0 },
+    { 0, 0, "00", 0 },
+    { 0, 0, "555", 0 },
     { 0, 0, "999", 0 },
+    { 0, 0, "1899", 0 },
+    { 0, 0, "2000", 0 },
+    { 0, 0, "9999", 0 },
     { 0, 0, "1000000000", 0 },
     // The Danish stemmer used to damage a number at the end of a word.
     // Regression test, applied to all stemmers.

@@ -12,6 +12,15 @@ static void writef(struct generator * g, const char * s, struct node * p);
 
 /* Write routines for items from the syntax tree */
 
+static void write_relop(struct generator * g, int relop) {
+    // Relational operators are the same as C, save for (in-)equality.
+    switch (relop) {
+        case c_eq: write_string(g, " === "); break;
+        case c_ne: write_string(g, " !== "); break;
+        default: write_c_relop(g, relop);
+    }
+}
+
 static void write_varname(struct generator * g, struct name * p) {
     if (p->type == t_external) {
         if (g->options->externals_prefix) {
@@ -66,15 +75,6 @@ static void write_literal_char(struct generator * g, symbol ch) {
         write_string(g, "}");
     }
     write_char(g, '"');
-}
-
-static void write_relop(struct generator * g, int relop) {
-    // Relational operators are the same as C, save for (in-)equality.
-    switch (relop) {
-        case c_eq: write_string(g, " === "); break;
-        case c_ne: write_string(g, " !== "); break;
-        default: write_c_relop(g, relop);
-    }
 }
 
 static void write_comment(struct generator * g, struct node * p) {
@@ -875,15 +875,18 @@ static void generate_setlimit(struct generator * g, struct node * p) {
         g->unreachable = false;
 
         g->B[0] = str_data(varname);
-        w(g, "~M~B0 = ");
         if (p->mode == m_forward) {
-            w(g, "$this->limit - $this->cursor;~N");
+            w(g, "~M~B0 = $this->limit;~N");
             w(g, "~M$this->limit = ");
+            generate_AE(g, q->AE);
+            w(g, ";~N");
+            w(g, "~M~B0 -= $this->limit;~N");
         } else {
-            w(g, "$this->limit_backward;~N");
+            w(g, "~M~B0 = $this->limit_backward;~N");
             w(g, "~M$this->limit_backward = ");
+            generate_AE(g, q->AE);
+            w(g, ";~N");
         }
-        generate_AE(g, q->AE); writef(g, ";~N", q);
 
         if (p->mode == m_forward) {
             str_assign(g->failure_str, "$this->limit += ");

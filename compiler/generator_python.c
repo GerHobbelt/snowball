@@ -20,6 +20,11 @@ static int new_label_python(struct generator * g) {
 
 /* Write routines for items from the syntax tree */
 
+static void write_relop(struct generator * g, int relop) {
+    // Relational operators are the same as C.
+    write_c_relop(g, relop);
+}
+
 static void write_varname(struct generator * g, struct name * p) {
     switch (p->type) {
         case t_external:
@@ -862,13 +867,17 @@ static void generate_setlimit(struct generator * g, struct node * p) {
 
         g->B[0] = str_data(varname);
         if (p->mode == m_forward) {
-            w(g, "~M~B0 = self.limit - self.cursor~N");
+            w(g, "~M~B0 = self.limit~N");
             w(g, "~Mself.limit = ");
+            generate_AE(g, q->AE);
+            w(g, "~N");
+            w(g, "~M~B0 -= self.limit~N");
         } else {
             w(g, "~M~B0 = self.limit_backward~N");
             w(g, "~Mself.limit_backward = ");
+            generate_AE(g, q->AE);
+            w(g, "~N");
         }
-        generate_AE(g, q->AE); writef(g, "~N", q);
 
         if (p->mode == m_forward) {
             str_assign(g->failure_str, "self.limit += ");
@@ -990,8 +999,7 @@ static void generate_integer_test(struct generator * g, struct node * p) {
         relop ^= 1;
     }
     generate_AE(g, p->left);
-    // Relational operators are the same as C.
-    write_c_relop(g, relop);
+    write_relop(g, relop);
     generate_AE(g, p->AE);
     if (optimise_to_return) {
         w(g, "~N");

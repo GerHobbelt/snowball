@@ -12,6 +12,11 @@ static void writef(struct generator * g, const char * s, struct node * p);
 
 /* Write routines for items from the syntax tree */
 
+static void write_relop(struct generator * g, int relop) {
+    // Relational operators are the same as C.
+    write_c_relop(g, relop);
+}
+
 static void write_varname(struct generator * g, struct name * p) {
     // We use the same naming scheme for both global and local variables.
     write_char(g, "SbirrG"[p->type]);
@@ -46,10 +51,11 @@ static void write_literal_string(struct generator * g, symbol * p) {
             // Use escapes for anything over 0x590 as a crude way to avoid
             // LTR characters affecting the rendering of source character
             // order in confusing ways.
-            char buf[16];
-            /* Zig uses \u{XXXX} for unicode escapes (variable width) */
-            checked_snprintf(buf, sizeof(buf), "\\u{%X}", ch);
-            write_string(g, buf);
+            //
+            // Zig Unicode escape are variable width: \u{XXXX}
+            write_string(g, "\\u{");
+            write_hex(g, ch);
+            write_char(g, '}');
         }
     }
     write_char(g, '"');
@@ -867,13 +873,17 @@ static void generate_setlimit(struct generator * g, struct node * p) {
 
         g->B[0] = str_data(varname);
         if (p->mode == m_forward) {
-            w(g, "~Mconst ~B0 = env.limit - env.cursor;~N");
+            w(g, "~Mvar ~B0 = env.limit;~N");
             w(g, "~Menv.limit = @intCast(@as(u32, @intCast(");
+            generate_AE(g, q->AE);
+            w(g, ")));~N");
+            w(g, "~M~B0 -= env.limit;~N");
         } else {
             w(g, "~Mconst ~B0 = env.limit_backward;~N");
             w(g, "~Menv.limit_backward = @intCast(@as(u32, @intCast(");
+            generate_AE(g, q->AE);
+            w(g, ")));~N");
         }
-        generate_AE(g, q->AE); writef(g, ")));~N", q);
 
         if (p->mode == m_forward) {
             str_assign(g->failure_str, "env.limit += ");
@@ -1008,8 +1018,7 @@ static void generate_integer_test(struct generator * g, struct node * p) {
         relop ^= 1;
     }
     generate_AE(g, p->left);
-    // Relational operators are the same as C.
-    write_c_relop(g, relop);
+    write_relop(g, relop);
     generate_AE(g, p->AE);
     if (optimise_to_return) {
         w(g, ";~N");

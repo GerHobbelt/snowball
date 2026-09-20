@@ -12,6 +12,11 @@ static void writef(struct generator * g, const char * s, struct node * p);
 
 /* Write routines for items from the syntax tree */
 
+static void write_relop(struct generator * g, int relop) {
+    // Relational operators are the same as C.
+    write_c_relop(g, relop);
+}
+
 static void write_varname(struct generator * g, struct name * p) {
     if (p->type == t_external) {
         if (g->options->externals_prefix) {
@@ -886,14 +891,17 @@ static void generate_setlimit(struct generator * g, struct node * p) {
 
         g->B[0] = str_data(varname);
         if (p->mode == m_forward) {
-            w(g, "~Mint ~B0 = limit - cursor;~N");
+            w(g, "~Mint ~B0 = limit;~N");
             w(g, "~Mlimit = ");
+            generate_AE(g, q->AE);
+            w(g, ";~N");
+            w(g, "~M~B0 -= limit;~N");
         } else {
             w(g, "~Mint ~B0 = limit_backward;~N");
             w(g, "~Mlimit_backward = ");
+            generate_AE(g, q->AE);
+            w(g, ";~N");
         }
-        generate_AE(g, q->AE);
-        writef(g, ";~N", q);
 
         if (p->mode == m_forward) {
             str_assign(g->failure_str, "limit += ");
@@ -1021,8 +1029,7 @@ static void generate_integer_test(struct generator * g, struct node * p) {
         relop ^= 1;
     }
     generate_AE(g, p->left);
-    // Relational operators are the same as C.
-    write_c_relop(g, relop);
+    write_relop(g, relop);
     generate_AE(g, p->AE);
     if (optimise_to_return) {
         w(g, ";~N");
@@ -1336,7 +1343,8 @@ static void generate_class_begin(struct generator * g) {
 
     w(g, "/**~N"
          " * This class implements the stemming algorithm defined by a snowball script.~N"
-         " *~N");
+         " *~N"
+         " * ");
     write_generated_comment_content(g);
     w(g, "~N */~N"
             "class ~n extends ");

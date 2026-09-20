@@ -686,6 +686,7 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
         p->left = q = q->right;
     }
 
+    int string_index = 0;
     while (q) {
         if (q->type == c_literalstring) {
             symbol * b = q->literalstring;
@@ -695,6 +696,7 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
             w1->size = SIZE(b);  /* number of characters in string */
             w1->i = -1;          /* index of longest substring */
             w1->result = -1;     /* number of corresponding case expression */
+            w1->string_index = string_index++;
             if (q->left) {
                 struct name * function = q->left->name;
                 w1->function = function;
@@ -1168,10 +1170,30 @@ static struct node * read_C(struct analyser * a) {
             }
             return n;
         }
-        case c_tomark:
         case c_atmark: {
             struct node * n = new_node(a, token);
-            n->AE = read_AE(a, NULL, 0);
+            struct node * AE = read_AE(a, NULL, 0);
+            if (AE->type == c_cursor) {
+                fprintf(stderr,
+                        "%s:%d: warning: `atmark cursor` is always true\n",
+                        t->file, n->line_number);
+                n->type = c_true;
+            } else {
+                n->AE = AE;
+            }
+            return n;
+        }
+        case c_tomark: {
+            struct node * n = new_node(a, token);
+            struct node * AE = read_AE(a, NULL, 0);
+            if (AE->type == c_cursor) {
+                fprintf(stderr,
+                        "%s:%d: warning: `tomark cursor` is a no-op\n",
+                        t->file, n->line_number);
+                n->type = c_true;
+            } else {
+                n->AE = AE;
+            }
             return n;
         }
         case c_hop: {
@@ -1248,6 +1270,12 @@ static struct node * read_C(struct analyser * a) {
             n->left = read_C(a);
             get_token(a, c_for);
             n->aux = read_C(a);
+            if (n->left->type == c_tomark && n->left->AE->type == c_limit) {
+                fprintf(stderr,
+                        "%s:%d: warning: `setlimit tomark limit` is a no-op\n",
+                        t->file, n->line_number);
+                return n->aux;
+            }
             return n;
         }
         case c_set:
@@ -1430,8 +1458,21 @@ static struct node * read_C(struct analyser * a) {
                 }
             }
             if (p->type == c_mathassign && q) {
-                /* $x = x + 1 doesn't initialise x. */
-                if (!ae_uses_name(p->AE, q)) {
+                if (ae_uses_name(p->AE, q)) {
+                    if (p->AE->type == c_name) {
+                        fprintf(stderr,
+                                "%s:%d: warning: `$",
+                                t->file, p->line_number);
+                        report_s(stderr, p->AE->name->s);
+                        fprintf(stderr, " = ");
+                        report_s(stderr, p->AE->name->s);
+                        fprintf(stderr, "` is a no-op\n");
+                        p->AE = NULL;
+                        p->type = c_true;
+                        q = NULL;
+                    }
+                } else {
+                    // `$x = <AE>` initialises `x` unless AE references `x`.
                     q->initialised = true;
                 }
             }
@@ -1976,11 +2017,11 @@ static int always_set_before_use_(struct node * p, struct node * func,
                 return UNKNOWN;
             }
 #if 0
-            // This check is valid, but currently it's better to not
-            // localise a variable if string-$ is used on it has definitely
-            // been set because for some target languages that means we need to
+            // This check is valid, but currently it's better to not treat
+            // initialising uses of string-$ as definitely setting the string
+            // variable because for some target languages that means we need to
             // initialise to an empty string at the start of the function and
-            // incur overhead from doing so.
+            // we would incur overhead from doing so.
             if (p->left->type == c_assign) {
                 // Special-case `$x = S` because it's easy to handle.
                 return SET_BEFORE_ANY_USE;
@@ -2083,26 +2124,33 @@ static int check_possible_signals(struct analyser * a, struct node * p) {
             return 1;
         }
         case c_not: {
+            // `not` signals the opposite to the command it is applied to.
             int res = p->left->possible_signals;
-            if (res >= 0)
-                res = !res;
-            if (res == 0 && p->right) {
-                if (p->right->type != c_functionend) {
-                    fprintf(stderr, "%s:%d: warning: 'not' always signals f here so following commands are unreachable\n",
-                            a->tokeniser->file, p->line_number);
-                }
-                p->right = NULL;
+            if (res < 0) {
+                // `not` applied to command which can signal `t` or `f`.
+                return res;
             }
-            return res;
+            if (res == 0) {
+                fprintf(stderr, "%s:%d: warning: 'not' applied to command which always signals f\n",
+                        a->tokeniser->file, p->line_number);
+                // Handling the failure will restore the cursor, so equivalent to `do`.
+                p->type = c_do;
+                return 1;
+            }
+            fprintf(stderr, "%s:%d: warning: 'not' applied to command which always signals t\n",
+                    a->tokeniser->file, p->line_number);
+            // This `not` is equivalent to `fail`.
+            p->type = c_fail;
+            return 0;
         }
         case c_setlimit: {
-            /* If either always signals f, setlimit does to. */
+            /* If either always signals f, setlimit does too. */
             int res = p->left->possible_signals;
             int res2 = p->aux->possible_signals;
             if (res == 0 || res2 == 0) {
                 return 0;
             }
-            // If both always signal t, setlimit does to.  Otherwise we know at
+            // If both always signal t, setlimit does too.  Otherwise we know at
             // least one is unknown and that means setlimit's signal is unknown.
             // We can achieve that with a simple bitwise or.
             return res | res2;

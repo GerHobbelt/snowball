@@ -16,13 +16,13 @@ TEE_TO_TMP_TXT:=tee tmp.txt|
 CLEAN_TMP_TXT:=rm -f tmp.txt
 endif
 
+# Use to hook up runtime tests (see `setup_runtime_tests` target below).
+-include overrides.mk
+
 # `make SNOWBALL_FLAGS=-comments` to generate target language code with
 # comments indicating the corresponding lines in the .sbl source.
 SNOWBALL_FLAGS ?=
 SNOWBALL_COMPILE := ./snowball $(SNOWBALL_FLAGS)
-
-# Use to hook up runtime tests (see `setup_runtime_tests` target below).
--include overrides.mk
 
 # Ada
 
@@ -275,8 +275,8 @@ ZIG_SOURCES = $(libstemmer_algorithms:%=$(zig_src_dir)/%_stemmer.zig) \
 	$(zig_src_dir)/algorithms.zig
 GO_SOURCES = $(libstemmer_algorithms:%=$(go_src_dir)/%_stemmer.go) \
 	$(go_src_main_dir)/stemwords/algorithms.go
-ADA_SOURCES = $(libstemmer_algorithms:%=$(ada_src_dir)/stemmer-%.ads) \
-        $(libstemmer_algorithms:%=$(ada_src_dir)/stemmer-%.adb) \
+ADA_SOURCES = $(libstemmer_algorithms:%=$(ada_src_dir)/stemmer-s_%.ads) \
+        $(libstemmer_algorithms:%=$(ada_src_dir)/stemmer-s_%.adb) \
         $(ada_src_dir)/stemmer-factory.ads $(ada_src_dir)/stemmer-factory.adb
 
 COMPILER_OBJECTS=$(COMPILER_SOURCES:.c=.o)
@@ -287,7 +287,6 @@ STEMWORDS_OBJECTS=$(STEMWORDS_SOURCES:.c=.o)
 STEMTEST_OBJECTS=$(STEMTEST_SOURCES:.c=.o)
 C_LIB_OBJECTS = $(C_LIB_SOURCES:.c=.o)
 C_OTHER_OBJECTS = $(C_OTHER_SOURCES:.c=.o)
-DART_BUILD_ARTIFACTS = dart/.dart_tool dart/pubspec.lock dart/.dart_deps
 JAVA_CLASSES = $(JAVA_SOURCES:.java=.class)
 JAVA_RUNTIME_CLASSES=$(JAVA_RUNTIME_SOURCES:.java=.class)
 
@@ -302,34 +301,8 @@ algorithms.mk: GNUmakefile libstemmer/mkalgorithms.pl $(MODULES)
 	libstemmer/mkalgorithms.pl algorithms.mk $(MODULES)
 
 clean:
-	rm -f $(COMPILER_OBJECTS) $(RUNTIME_OBJECTS) \
-	      $(LIBSTEMMER_OBJECTS) $(LIBSTEMMER_UTF8_OBJECTS) $(STEMWORDS_OBJECTS) snowball$(EXEEXT) \
-	      libstemmer.a stemwords$(EXEEXT) \
-              libstemmer/modules.h \
-              libstemmer/modules_utf8.h \
-	      $(ADA_SOURCES) ada/bin/generate ada/bin/stemwords \
-	      $(C_LIB_SOURCES) $(C_LIB_HEADERS) $(C_LIB_OBJECTS) \
-	      $(C_OTHER_SOURCES) $(C_OTHER_HEADERS) $(C_OTHER_OBJECTS) \
-	      $(CSHARP_SOURCES) \
-	      $(DART_SOURCES) \
-	      $(go_src_dir)/*/*_stemmer.go $(go_src_main_dir)/stemwords/algorithms.go \
-	      $(JAVA_SOURCES) $(JAVA_CLASSES) $(JAVA_RUNTIME_CLASSES) \
-	      $(JS_SOURCES) \
-	      $(PASCAL_SOURCES) pascal/stemwords.dpr pascal/stemwords pascal/*.o pascal/*.ppu \
-	      $(PHP_SOURCES) \
-	      $(PYTHON_SOURCES) \
-	      $(RUST_SOURCES) \
-	      $(ZIG_SOURCES) zig/stemwords$(EXEEXT) \
-	      stemtest$(EXEEXT) $(STEMTEST_OBJECTS) \
-              libstemmer/mkinc.mak libstemmer/mkinc_utf8.mak \
-              libstemmer/libstemmer.c libstemmer/libstemmer_utf8.c \
-	      algorithms.mk
-	rm -rf ada/obj dist
-	rm -rf $(DART_BUILD_ARTIFACTS)
-	-rmdir $(c_src_dir)
-	-rmdir $(js_output_dir)
-	-rmdir $(php_output_dir)
-	-rmdir $(python_output_dir)
+	rm -f $(CLEANFILES)
+	rm -rf $(CLEANDIRS)
 
 update_version:
 	perl -pi -e '/SNOWBALL_VERSION/ && s/\d+\.\d+\.\d+/$(SNOWBALL_VERSION)/' \
@@ -348,6 +321,11 @@ ALL_CODE_DIRS := \
 # When runtime tests are enabled, this gets overridden by overrides.mk.
 BASELINE ?= baseline
 
+baseline-create: gprbuild=perl -e '$$ARGV[0] eq "-Pgenerate" and unshift @ARGV, "gprbuild" and exec @ARGV' --
+baseline-create: mcs=:
+baseline-create: DART=:
+baseline-create: go=:
+baseline-create: JAVAC=:
 baseline-create: everything
 	rm -rf *.$(BASELINE)
 	for d in $(ALL_CODE_DIRS) ; do cp -a $$d $$d.$(BASELINE) ; done
@@ -367,23 +345,39 @@ snowball$(EXEEXT): $(COMPILER_OBJECTS)
 
 $(COMPILER_OBJECTS): $(COMPILER_HEADERS)
 
+# List of files/glob patterns to remove on clean.  This gets appended to by
+# each target language section.
+CLEANFILES := $(COMPILER_OBJECTS) $(RUNTIME_OBJECTS) \
+	      $(LIBSTEMMER_OBJECTS) $(LIBSTEMMER_UTF8_OBJECTS) $(STEMWORDS_OBJECTS) snowball$(EXEEXT) \
+	      libstemmer.a stemwords$(EXEEXT) \
+              libstemmer/modules.h \
+              libstemmer/modules_utf8.h \
+	      stemtest$(EXEEXT) $(STEMTEST_OBJECTS) \
+              libstemmer/mkinc.mak libstemmer/mkinc_utf8.mak \
+              libstemmer/libstemmer.c libstemmer/libstemmer_utf8.c \
+	      algorithms.mk
+
+# List of directories to recursively remove on clean.  This gets appended to by
+# each target language section.
+CLEANDIRS := dist
+
 # Ada
 
 ifneq '$(filter grouped-target,$(.FEATURES))' ''
 # Grouped-targets were added in GNU make 4.3.
-$(ada_src_dir)/stemmer-%.adb $(ada_src_dir)/stemmer-%.ads &: $(ALGORITHMS)/%.sbl snowball
+$(ada_src_dir)/stemmer-s_%.adb $(ada_src_dir)/stemmer-s_%.ads &: $(ALGORITHMS)/%.sbl snowball
 else
 # This will fail to recreate the .ads if it is deleted but the corresponding
 # .adb is still present and up-to-date.  That seems better than forcing a
 # serial build with .NOTPARALLEL which it seems can only be applied to an
 # entire makefile, not per-rule.
-$(ada_src_dir)/stemmer-%.ads: $(ada_src_dir)/stemmer-%.adb
+$(ada_src_dir)/stemmer-s_%.ads: $(ada_src_dir)/stemmer-s_%.adb
 	@:
 
-$(ada_src_dir)/stemmer-%.adb: $(ALGORITHMS)/%.sbl snowball
+$(ada_src_dir)/stemmer-s_%.adb: $(ALGORITHMS)/%.sbl snowball
 endif
 	@mkdir -p $(ada_src_dir)
-	$(SNOWBALL_COMPILE) $< -ada -P $* -o $@
+	$(SNOWBALL_COMPILE) $< -ada -P 'S_$*' -o $@
 
 # C
 
@@ -457,7 +451,7 @@ $(dart_src_dir)/%_stemmer.dart: $(ALGORITHMS)/%.sbl snowball$(EXEEXT)
 
 $(go_src_main_dir)/stemwords/algorithms.go: go/stemwords/generate.go $(MODULES)
 	@echo "Generating algorithms.go"
-	@cd go/stemwords && go generate
+	@cd go/stemwords && $(go) generate
 
 $(go_src_dir)/%_stemmer.go: $(ALGORITHMS)/%.sbl snowball$(EXEEXT)
 	@mkdir -p $(go_src_dir)/$*
@@ -758,14 +752,16 @@ check_ada_%: $(STEMMING_DATA_ABS)/%
 	fi
 	@if test -f '$</voc.txt.gz' ; then rm tmp.txt ; fi
 
-$(ada_src_dir)/stemmer-factory.ads $(ada_src_dir)/stemmer-factory.adb: ada/bin/generate
+$(ada_src_dir)/stemmer-factory.ads $(ada_src_dir)/stemmer-factory.adb: ada/bin/generate $(MODULES)
 	cd $(ada_src_dir) && ../bin/generate $(libstemmer_algorithms)
 
-ada/bin/generate:
+ada/bin/generate: ada/generate.gpr ada/generate/generate.adb
 	cd ada && $(gprbuild) -Pgenerate -p
 
-ada/bin/stemwords: $(ADA_SOURCES) ada/src/stemmer.adb ada/src/stemmer.ads ada/src/stemwords.adb
+ada/bin/stemwords: ada/stemwords.gpr $(ADA_SOURCES) ada/src/stemmer.adb ada/src/stemmer.ads ada/src/stemwords.adb
 	cd ada && $(gprbuild) -Pstemwords -p
+
+CLEANDIRS += $(ada_src_dir) ada/bin ada/obj
 
 ###############################################################################
 # C
@@ -823,6 +819,8 @@ check_koi8r_%: $(STEMMING_DATA)/% stemwords$(EXEEXT)
 	    $(ICONV) -f KOI8-R -t UTF-8 |\
 	    $(DIFF) -u '$</output.txt' -
 
+CLEANDIRS += $(c_src_dir)
+
 ###############################################################################
 # C#
 ###############################################################################
@@ -847,6 +845,8 @@ check_csharp_%: $(STEMMING_DATA_ABS)/%
 	      $(DIFF) -u $</output.txt - ;\
 	fi
 	@if test -f '$</voc.txt.gz' ; then rm tmp.txt ; fi
+
+CLEANFILES += $(CSHARP_SOURCES) csharp_stemwords$(EXEEXT)
 
 ###############################################################################
 # Dart
@@ -880,6 +880,9 @@ check_dart_%: $(STEMMING_DATA_ABS)/%
 	fi
 	@if test -f '$</voc.txt.gz' ; then rm tmp.txt ; fi
 
+CLEANDIRS += $(dart_src_dir) dart/.dart_tool
+CLEANFILES += $(dart_runtime_dir)/algorithms.dart dart/.dart_deps dart/pubspec.lock
+
 ###############################################################################
 # Go
 ###############################################################################
@@ -904,6 +907,9 @@ check_go_%: $(STEMMING_DATA_ABS)/%
 	      $(DIFF) -u $</output.txt - ;\
 	fi
 	@if test -f '$</voc.txt.gz' ; then rm tmp.txt ; fi
+
+CLEANDIRS += $(go_src_dir)
+CLEANFILES += $(go_src_main_dir)/stemwords/algorithms.go
 
 ###############################################################################
 # Java
@@ -935,6 +941,9 @@ check_java_%: $(STEMMING_DATA_ABS)/%
 	fi
 	@if test -f '$</voc.txt.gz' ; then rm tmp.txt ; fi
 
+CLEANDIRS += $(java_src_dir)
+CLEANFILES += $(JAVA_RUNTIME_CLASSES)
+
 ###############################################################################
 # Javascript
 ###############################################################################
@@ -961,6 +970,8 @@ check_js_%: $(STEMMING_DATA)/%
 	fi
 	@if test -f '$</voc.txt.gz' ; then rm tmp.txt ; fi
 
+CLEANDIRS += $(js_output_dir)
+
 ###############################################################################
 # Pascal
 ###############################################################################
@@ -980,6 +991,8 @@ check_pascal_%: $(STEMMING_DATA_ABS)/%
 	    ./pascal/stemwords -l $* |\
 	    $(ICONV) -f ISO-8859-1 -t UTF-8 |\
 	    $(DIFF) -u $</output.txt -
+
+CLEANFILES += $(PASCAL_SOURCES) pascal/stemwords.dpr pascal/stemwords pascal/*.o pascal/*.ppu
 
 ###############################################################################
 # PHP
@@ -1006,6 +1019,8 @@ check_php_%: $(STEMMING_DATA)/%
 	      $(DIFF) -u $</output.txt - ;\
 	fi
 	@if test -f '$</voc.txt.gz' ; then rm tmp.txt ; fi
+
+CLEANDIRS += $(php_output_dir)
 
 ###############################################################################
 # Python
@@ -1037,6 +1052,8 @@ check_python_stemwords: $(PYTHON_STEMWORDS_SOURCE) $(PYTHON_SOURCES)
 	cp -a $(PYTHON_SOURCES) python_check/snowballstemmer
 	cp -a $(PYTHON_STEMWORDS_SOURCE) python_check/
 
+CLEANDIRS += python_check $(python_output_dir)
+
 ###############################################################################
 # Rust
 ###############################################################################
@@ -1061,6 +1078,9 @@ check_rust_%: $(STEMMING_DATA_ABS)/%
 	      $(DIFF) -u $</output.txt - ;\
 	fi
 	@if test -f '$</voc.txt.gz' ; then rm tmp.txt ; fi
+
+CLEANFILES += $(RUST_SOURCES) rust/Cargo.lock
+CLEANDIRS += rust/target
 
 ###############################################################################
 # Zig
@@ -1089,6 +1109,8 @@ check_zig_%: $(STEMMING_DATA_ABS)/%
 	      $(DIFF) -u $</output.txt - ;\
 	fi
 	@if test -f '$</voc.txt.gz' ; then rm tmp.txt ; fi
+
+CLEANFILES += $(ZIG_SOURCES) zig/stemwords$(EXEEXT)
 
 ###############################################################################
 # Runtime tests
@@ -1120,7 +1142,15 @@ setup_runtime_tests: clean_runtime_tests
 	  echo ok > $$r/$$d/output.txt ;\
 	  echo "$$d UTF_8,ISO_8859_1 $$d" >> $$r/modules.txt ;\
 	done
-	printf '%s:=%s\n' BASELINE rbaseline STEMMING_DATA $(RUNTIME_DATA_DIR) ALGORITHMS tests/runtime MODULES $(RUNTIME_DATA_DIR)/modules.txt THIN_FACTOR '' other_algorithms > overrides.mk
+	printf '%s:=%s\n' \
+	  ALGORITHMS 'tests/runtime' \
+	  BASELINE 'rbaseline' \
+	  MODULES '$(RUNTIME_DATA_DIR)/modules.txt' \
+	  other_algorithms '' \
+	  SNOWBALL_FLAGS '-comments' \
+	  STEMMING_DATA '$(RUNTIME_DATA_DIR)' \
+	  THIN_FACTOR '' \
+	  > overrides.mk
 	rm -f algorithms.mk
 	$(MAKE) algorithms.mk
 
