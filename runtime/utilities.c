@@ -40,14 +40,15 @@ extern void lose_s(symbol * p) {
 
 /*
    new_p = skip_utf8(p, c, l, n); skips n characters forwards from p + c.
-   new_p is the new position, or -1 on failure.
+   new_p is the new position, or -1 on failure (if c would be > l).
+
+   Caller ensures n >= 0.
 
    -- used to implement hop and next in the utf8 case.
 */
 
 extern int skip_utf8(const symbol * p, int c, int limit, int n) {
     int b;
-    if (n < 0) return -1;
     for (; n > 0; n--) {
         if (c >= limit) return -1;
         b = p[c++];
@@ -65,14 +66,15 @@ extern int skip_utf8(const symbol * p, int c, int limit, int n) {
 
 /*
    new_p = skip_b_utf8(p, c, lb, n); skips n characters backwards from p + c - 1
-   new_p is the new position, or -1 on failure.
+   new_p is the new position, or -1 on failure (if c would be < lb).
+
+   Caller ensures n >= 0.
 
    -- used to implement hop and next in the utf8 case.
 */
 
 extern int skip_b_utf8(const symbol * p, int c, int limit, int n) {
     int b;
-    if (n < 0) return -1;
     for (; n > 0; n--) {
         if (c <= limit) return -1;
         b = p[--c];
@@ -371,9 +373,11 @@ extern int find_among(struct SN_env * z, const struct among * v, int v_size,
             w = v + k;
             fprintf(stderr, "%s: among %d : %d of %d string '%.*s'\n", w[v_size].s, among_number, w[v_size].result, v_size, w->s_size, w->s);
         }
-        if (v[v_size * 2].s_size == -1) {
-            fprintf(stderr, "%s: among %d no match impossible\n", v[v_size * 2].s, among_number);
-        } else {
+        /* If the among matches the empty string without a gating function then
+         * the "no match" case is impossible and so not useful to include in a
+         * coverage report.
+         */
+        if (v[v_size * 2].s_size != -1) {
             fprintf(stderr, "%s: among %d no match\n", v[v_size * 2].s, among_number);
         }
         among_seen[among_number] = 1;
@@ -471,9 +475,11 @@ extern int find_among_b(struct SN_env * z, const struct among * v, int v_size,
             w = v + k;
             fprintf(stderr, "%s: among %d : %d of %d string '%.*s'\n", w[v_size].s, among_number, w[v_size].result, v_size, w->s_size, w->s);
         }
-        if (v[v_size * 2].s_size == -1) {
-            fprintf(stderr, "%s: among %d no match impossible\n", v[v_size * 2].s, among_number);
-        } else {
+        /* If the among matches the empty string without a gating function then
+         * the "no match" case is impossible and so not useful to include in a
+         * coverage report.
+         */
+        if (v[v_size * 2].s_size != -1) {
             fprintf(stderr, "%s: among %d no match\n", v[v_size * 2].s, among_number);
         }
         among_seen[among_number] = 1;

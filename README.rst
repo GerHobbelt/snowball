@@ -9,8 +9,8 @@ string handling language from the 1960s.  It now also serves as a metaphor for
 how the project grows by gathering contributions over time.
 
 The Snowball compiler translates a Snowball program into source code in another
-language - currently Ada, ISO C, C#, Dart, Go, Java, Javascript, Object Pascal,
-PHP, Python, Rust and Zig are supported.
+language - currently Ada, C, C++, C#, Dart, Go, Java, Javascript, Object
+Pascal, PHP, Python, Rust and Zig are supported.
 
 This repository contains the source code for the snowball compiler and the
 stemming algorithms.  The snowball compiler is written in ISO C - you'll need
@@ -54,8 +54,8 @@ subdirectory.
 To actually build the libstemmer library you then unpack and build the
 distribution tarball, e.g. for C::
 
-    tar xf dist/libstemmer_c-3.0.0.tar.gz
-    cd libstemmer_c-3.0.0
+    tar xf dist/libstemmer_c-3.1.0.tar.gz
+    cd libstemmer_c-3.1.0
     make
 
 Cross-compiling
@@ -66,8 +66,8 @@ be built with a native compiler then libstemmer with the cross-compiler.  For
 example::
 
     make CC=cc dist_libstemmer_c
-    tar xf dist/libstemmer_c-3.0.0.tar.gz
-    cd libstemmer_c-3.0.0
+    tar xf dist/libstemmer_c-3.1.0.tar.gz
+    cd libstemmer_c-3.1.0
     make CC=riscv64-unknown-linux-gnu-gcc
 
 If you are cross-compiling to or from Microsoft Windows, you'll need to also

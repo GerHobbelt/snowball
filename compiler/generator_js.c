@@ -370,7 +370,7 @@ static void generate_or(struct generator * g, struct node * p) {
     struct str * a1 = str_copy(g->failure_str);
 
     int out_lab = new_label(g);
-    int end_unreachable = true;
+    bool end_unreachable = true;
 
     write_comment(g, p);
     wsetlab_begin(g, out_lab);
@@ -592,7 +592,7 @@ static void generate_GO(struct generator * g, struct node * p, int is_goto) {
     int a0 = g->failure_label;
     struct str * a1 = str_copy(g->failure_str);
 
-    int end_unreachable = false;
+    bool end_unreachable = false;
 
     int golab = new_label(g);
     g->I[0] = golab;
@@ -722,11 +722,6 @@ static void generate_atleast(struct generator * g, struct node * p) {
     str_delete(loopvar);
 }
 
-static void generate_setmark(struct generator * g, struct node * p) {
-    write_comment(g, p);
-    writef(g, "~M~V = this.c;~N", p);
-}
-
 static void generate_tomark(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? ">" : "<";
@@ -737,20 +732,9 @@ static void generate_tomark(struct generator * g, struct node * p) {
     w(g, "~Mthis.c = "); generate_AE(g, p->AE); writef(g, ";~N", p);
 }
 
-static void generate_atmark(struct generator * g, struct node * p) {
-    write_comment(g, p);
-    w(g, "~Mif (this.c !== "); generate_AE(g, p->AE); writef(g, ") ", p);
-    write_failure_after_if(g);
-    g->unreachable = false;
-}
-
 static void generate_hop(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? "+" : "-";
-
-    w(g, "~{~Mconst /** number */ c = this.c ~S0 ");
-    generate_AE(g, p->AE);
-    w(g, ";~N");
 
     g->S[1] = p->mode == m_forward ? "> this.limit" : "< this.limit_backward";
     g->S[2] = p->mode == m_forward ? "<" : ">";
@@ -759,12 +743,17 @@ static void generate_hop(struct generator * g, struct node * p) {
         //
         // No need to check for negative hop as that's converted to false by
         // the analyser.
-        write_failure_if(g, "c ~S1", p);
+        g->I[0] = p->AE->number;
+        write_failure_if(g, "this.c ~S0 ~I0 ~S1", p);
+        writef(g, "~Mthis.c ~S0= ~I0;~N", p);
     } else {
+        w(g, "~{~Mconst /** number */ c = this.c ~S0 ");
+        generate_AE(g, p->AE);
+        w(g, ";~N");
         write_failure_if(g, "c ~S1 || c ~S2 this.c", p);
+        writef(g, "~Mthis.c = c;~N", p);
+        writef(g, "~}", p);
     }
-    writef(g, "~Mthis.c = c;~N", p);
-    writef(g, "~}", p);
 }
 
 static void generate_delete(struct generator * g, struct node * p) {
@@ -778,15 +767,6 @@ static void generate_tolimit(struct generator * g, struct node * p) {
         writef(g, "~Mthis.c = this.limit;~N", p);
     } else {
         writef(g, "~Mthis.c = this.limit_backward;~N", p);
-    }
-}
-
-static void generate_atlimit(struct generator * g, struct node * p) {
-    write_comment(g, p);
-    if (p->mode == m_forward) {
-        write_failure_if(g, "this.c < this.limit", p);
-    } else {
-        write_failure_if(g, "this.c > this.limit_backward", p);
     }
 }
 
@@ -1344,14 +1324,11 @@ static void generate(struct generator * g, struct node * p) {
         case c_repeat:        generate_repeat(g, p); break;
         case c_loop:          generate_loop(g, p); break;
         case c_atleast:       generate_atleast(g, p); break;
-        case c_setmark:       generate_setmark(g, p); break;
         case c_tomark:        generate_tomark(g, p); break;
-        case c_atmark:        generate_atmark(g, p); break;
         case c_hop:           generate_hop(g, p); break;
         case c_delete:        generate_delete(g, p); break;
         case c_next:          generate_next(g, p); break;
         case c_tolimit:       generate_tolimit(g, p); break;
-        case c_atlimit:       generate_atlimit(g, p); break;
         case c_leftslice:     generate_leftslice(g, p); break;
         case c_rightslice:    generate_rightslice(g, p); break;
         case c_assignto:      generate_assignto(g, p); break;
@@ -1525,7 +1502,7 @@ static void generate_groupings(struct generator * g) {
 }
 
 static void generate_members(struct generator * g) {
-    int wrote_members = false;
+    bool wrote_members = false;
 
     for (struct name * q = g->analyser->names; q; q = q->next) {
         if (q->local_to) continue;

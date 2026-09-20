@@ -90,7 +90,7 @@ static void write_literal_string(struct generator * g, symbol * p) {
     }
     // Ada supports UTF-8 literal strings, we only need to escape the quote and
     // special characters.
-    int in_quotes = false;
+    bool in_quotes = false;
     int i = 0;
     while (i < SIZE(p)) {
         int ch;
@@ -420,7 +420,7 @@ static void generate_or(struct generator * g, struct node * p) {
     int a0 = g->failure_label;
     struct str * a1 = str_copy(g->failure_str);
 
-    int end_unreachable = true;
+    bool end_unreachable = true;
 
     write_comment(g, p);
     w(g, "~Mloop~N~+");
@@ -663,7 +663,7 @@ static void generate_GO(struct generator * g, struct node * p, int is_goto) {
     int used = g->label_used;
     int a0 = g->failure_label;
 
-    int end_unreachable = false;
+    bool end_unreachable = false;
 
     w(g, "~Mloop~N~+");
 
@@ -793,11 +793,6 @@ static void generate_atleast(struct generator * g, struct node * p) {
     str_delete(loopvar);
 }
 
-static void generate_setmark(struct generator * g, struct node * p) {
-    write_comment(g, p);
-    writef(g, "~M~V := Z.C;~N", p);
-}
-
 static void generate_tomark(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? ">" : "<";
@@ -807,14 +802,6 @@ static void generate_tomark(struct generator * g, struct node * p) {
     w(g, "~Mend if;~N");
     g->unreachable = false;
     w(g, "~MZ.C := "); generate_AE(g, p->AE); writef(g, ";~N", p);
-}
-
-static void generate_atmark(struct generator * g, struct node * p) {
-    write_comment(g, p);
-    w(g, "~Mif Z.C /= "); generate_AE(g, p->AE); writef(g, " then~N~+", p);
-    write_failure(g);
-    w(g, "~-~Mend if;~N");
-    g->unreachable = false;
 }
 
 static void generate_hop(struct generator * g, struct node * p) {
@@ -837,13 +824,6 @@ static void generate_tolimit(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? "" : "b";
     writef(g, "~MZ.C := Z.L~S0;~N", p);
-}
-
-static void generate_atlimit(struct generator * g, struct node * p) {
-    write_comment(g, p);
-    g->S[0] = p->mode == m_forward ? "" : "b";
-    g->S[1] = p->mode == m_forward ? "<" : ">";
-    write_failure_if(g, "Z.C ~S1 Z.L~S0", p);
 }
 
 static void generate_leftslice(struct generator * g, struct node * p) {
@@ -1382,12 +1362,8 @@ static void generate_substring(struct generator * g, struct node * p) {
                 writef(g, "~Mif Z.C - ~I4 <= Z.Lb", p);
             }
         }
-        if (n_cases == 0) {
-            /* We get this for the degenerate case: among ( '' )
-             * This doesn't seem to be a useful construct, but it is
-             * syntactically valid.
-             */
-        } else if (n_cases == 1) {
+        assert(n_cases > 0);
+        if (n_cases == 1) {
             g->I[4] = cases[0];
             writef(g, " or else ~S2 /= ~I4", p);
         } else if (n_cases == 2) {
@@ -1398,7 +1374,7 @@ static void generate_substring(struct generator * g, struct node * p) {
             writef(g, " or else Check_Among (Z, ~S1, ~I2, ~S3)", p);
         }
         writef(g, " then~+~N", p);
-        if (empty_case != -1) {
+        if (empty_case != -1 && !among_cases[empty_case].function) {
             /* If the among includes the empty string, it can never fail
              * so not matching the bitmap means we match the empty string.
              */
@@ -1542,14 +1518,11 @@ static void generate(struct generator * g, struct node * p) {
         case c_repeat:        generate_repeat(g, p); break;
         case c_loop:          generate_loop(g, p); break;
         case c_atleast:       generate_atleast(g, p); break;
-        case c_setmark:       generate_setmark(g, p); break;
         case c_tomark:        generate_tomark(g, p); break;
-        case c_atmark:        generate_atmark(g, p); break;
         case c_hop:           generate_hop(g, p); break;
         case c_delete:        generate_delete(g, p); break;
         case c_next:          generate_next(g, p); break;
         case c_tolimit:       generate_tolimit(g, p); break;
-        case c_atlimit:       generate_atlimit(g, p); break;
         case c_leftslice:     generate_leftslice(g, p); break;
         case c_rightslice:    generate_rightslice(g, p); break;
         case c_assignto:      generate_assignto(g, p); break;
@@ -1898,7 +1871,7 @@ extern void generate_program_ada(struct generator * g) {
     }
     generate_method_decls(g, t_routine);
 
-    int need_among_handler = false;
+    bool need_among_handler = false;
     for (struct among * a = g->analyser->amongs; a; a = a->next) {
         if (a->function_count > 0) {
             need_among_handler = true;

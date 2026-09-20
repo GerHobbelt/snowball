@@ -745,14 +745,20 @@ static void generate_GO(struct generator * g, struct node * p, int is_goto) {
 
 static void generate_loop(struct generator * g, struct node * p) {
     write_comment(g, p);
-    w(g, "~{~Mint i; for (i = ");
+    if (g->options->target_lang == LANG_C) {
+        w(g, "~{~Mint i; for (i = ");
+    } else {
+        w(g, "~Mfor (int i = ");
+    }
     generate_AE(g, p->AE);
     writef(g, "; i > 0; i--) {~N~+", p);
 
     generate(g, p->left);
 
-    w(g,    "~}"
-         "~}");
+    w(g, "~}");
+    if (g->options->target_lang == LANG_C) {
+        w(g, "~}");
+    }
 }
 
 static void generate_repeat_or_atleast(struct generator * g, struct node * p, struct str * loopvar) {
@@ -820,11 +826,6 @@ static void generate_atleast(struct generator * g, struct node * p) {
     str_delete(loopvar);
 }
 
-static void generate_setmark(struct generator * g, struct node * p) {
-    write_comment(g, p);
-    writef(g, "~M~V = z->c;~N", p);
-}
-
 static void generate_tomark(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? ">" : "<";
@@ -833,22 +834,28 @@ static void generate_tomark(struct generator * g, struct node * p) {
     w(g, "~Mz->c = "); generate_AE(g, p->AE); writef(g, ";~N", p);
 }
 
-static void generate_atmark(struct generator * g, struct node * p) {
-    write_comment(g, p);
-    w(g, "~Mif (z->c != "); generate_AE(g, p->AE); writef(g, ") ~f~N", p);
-}
-
 static void generate_hop(struct generator * g, struct node * p) {
     write_comment(g, p);
     if (g->options->encoding == ENC_UTF8) {
         g->S[0] = p->mode == m_forward ? "" : "_b";
         g->S[1] = p->mode == m_forward ? "z->l" : "z->lb";
-        w(g, "~{~Mint ret = skip~S0_utf8(z->p, z->c, ~S1, ");
-        generate_AE(g, p->AE);
-        writef(g, ");~N", p);
-        writef(g, "~Mif (ret < 0) ~f~N", p);
-        writef(g, "~Mz->c = ret;~N"
-               "~}", p);
+        w(g, "~{");
+        if (p->AE->type == c_number) {
+            // Constant distance hop.
+            //
+            // No need to check for negative hop as that's converted to false by
+            // the analyser.
+            g->I[0] = p->AE->number;
+            w(g, "~Mint ret = skip~S0_utf8(z->p, z->c, ~S1, ~I0);~N");
+        } else {
+            w(g, "~Mint ae = ");
+            generate_AE(g, p->AE);
+            w(g, ";~N");
+            w(g, "~Mint ret = ae >= 0 ? skip~S0_utf8(z->p, z->c, ~S1, ae) : -1;~N");
+        }
+        w(g, "~Mif (ret < 0) ~f~N");
+        w(g, "~Mz->c = ret;~N");
+        w(g, "~}");
     } else {
         // Fixed-width characters.
         g->S[0] = p->mode == m_forward ? "+" : "-";
@@ -888,13 +895,6 @@ static void generate_tolimit(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? "" : "b";
     writef(g, "~Mz->c = z->l~S0;~N", p);
-}
-
-static void generate_atlimit(struct generator * g, struct node * p) {
-    write_comment(g, p);
-    g->S[0] = p->mode == m_forward ? "" : "b";
-    g->S[1] = p->mode == m_forward ? "<" : ">";
-    writef(g, "~Mif (z->c ~S1 z->l~S0) ~f~N", p);
 }
 
 static void generate_leftslice(struct generator * g, struct node * p) {
@@ -945,7 +945,7 @@ static void generate_setlimit(struct generator * g, struct node * p) {
     write_comment(g, p);
     struct str * varname = vars_newname(g);
 
-    int extra_block = false;
+    bool extra_block = false;
     if (p->left && p->left->type == c_tomark) {
         /* Special case for:
          *
@@ -1345,7 +1345,7 @@ static void generate_substring(struct generator * g, struct node * p) {
         }
     }
 
-    int pre_check = (block != -1 || n_cases <= 2);
+    bool pre_check = (block != -1 || n_cases <= 2);
     if (g->options->coverage) {
         // Don't shortcut if generating coverage.
         pre_check = false;
@@ -1372,12 +1372,8 @@ static void generate_substring(struct generator * g, struct node * p) {
                 writef(g, "~Mif (z->c - ~I4 <= z->lb", p);
             }
         }
-        if (n_cases == 0) {
-            /* We get this for the degenerate case: among ( '' )
-             * This doesn't seem to be a useful construct, but it is
-             * syntactically valid.
-             */
-        } else if (n_cases == 1) {
+        assert(n_cases > 0);
+        if (n_cases == 1) {
             g->I[4] = cases[0];
             writef(g, " || ~S1 != ~I4", p);
         } else if (n_cases == 2) {
@@ -1388,9 +1384,9 @@ static void generate_substring(struct generator * g, struct node * p) {
             writef(g, " || ~S1 >> 5 != ~I2 || !((~I3 >> (~S1 & 0x1f)) & 1)", p);
         }
         write_string(g, ") ");
-        if (empty_case != -1) {
-            /* If the among includes the empty string, it can never fail
-             * so not matching the bitmap means we match the empty string.
+        if (empty_case != -1 && !among_cases[empty_case].function) {
+            /* If the among includes the ungated empty string, it can never
+             * fail so not matching the bitmap means we match the empty string.
              */
             g->I[4] = among_cases[empty_case].result;
             writef(g, "among_var = ~I4; else~N", p);
@@ -1519,14 +1515,11 @@ static void generate(struct generator * g, struct node * p) {
         case c_repeat:        generate_repeat(g, p); break;
         case c_loop:          generate_loop(g, p); break;
         case c_atleast:       generate_atleast(g, p); break;
-        case c_setmark:       generate_setmark(g, p); break;
         case c_tomark:        generate_tomark(g, p); break;
-        case c_atmark:        generate_atmark(g, p); break;
         case c_hop:           generate_hop(g, p); break;
         case c_delete:        generate_delete(g, p); break;
         case c_next:          generate_next(g, p); break;
         case c_tolimit:       generate_tolimit(g, p); break;
-        case c_atlimit:       generate_atlimit(g, p); break;
         case c_leftslice:     generate_leftslice(g, p); break;
         case c_rightslice:    generate_rightslice(g, p); break;
         case c_assignto:      generate_assignto(g, p); break;
@@ -2181,7 +2174,8 @@ static void generate_header_file(struct generator * g) {
              "~Mstd::string operator()(const std::string& word) override {~N~+"
              "~Mstruct SN_env* z = &(zlocal.z);~N"
              "~Mconst symbol* s = reinterpret_cast<const symbol*>(word.data());~N"
-             "~Mreplace_s(z, 0, z->l, word.size(), s);~N"
+             "~Mint s_size = word.size() > INT_MAX ? INT_MAX : word.size();~N"
+             "~Mreplace_s(z, 0, z->l, s_size, s);~N"
              "~Mz->c = 0;~N"
              "~M");
         write_string(g, o->package);

@@ -123,6 +123,9 @@ static void unexpected_token_error(struct analyser * a,
     }
     report_error_after(a);
     putc('\n', stderr);
+    // If the token is `)` then always hold it as the actual problem is almost
+    // certainly another token missing before it.
+    if (t->token == c_ket) hold_token(t);
 }
 
 static void substring_without_among_error(struct analyser * a) {
@@ -133,7 +136,11 @@ static void substring_without_among_error(struct analyser * a) {
 
 static int check_token(struct analyser * a, int code) {
     struct tokeniser * t = a->tokeniser;
-    if (t->token != code) { omission_error(a, code); return false; }
+    if (t->token != code) {
+        omission_error(a, code);
+        hold_token(t);
+        return false;
+    }
     return true;
 }
 
@@ -155,9 +162,7 @@ static void hold_token_if_toplevel(struct tokeniser * t) {
 static int get_token(struct analyser * a, int code) {
     struct tokeniser * t = a->tokeniser;
     read_token(t);
-    int x = check_token(a, code);
-    if (!x) hold_token(t);
-    return x;
+    return check_token(a, code);
 }
 
 static struct name * look_for_name(struct analyser * a) {
@@ -275,7 +280,7 @@ done_case_check:
                 }
                 break;
             default:
-                if (!check_token(a, c_ket)) hold_token(t);
+                check_token(a, c_ket);
                 return;
         }
     }
@@ -555,16 +560,25 @@ static struct node * read_AE(struct analyser * a, struct name * assigned_to, int
     }
 }
 
+static int
+is_just_false(struct node * q)
+{
+    if (!q) return 1;
+    if (q->type == c_false) return 1;
+    if (q->type != c_bra) return 0;
+    return is_just_false(q->left);
+}
+
 static struct node * read_or(struct analyser * a, struct node * n) {
     struct tokeniser * t = a->tokeniser;
     // Note current line number so c_or node reports the right line.
     int or_line = t->line_number;
-    struct node * p = n->type == c_false ? NULL : n;
+    struct node * p = is_just_false(n) ? NULL : n;
     struct node * p_end = p;
     do {
         struct node * q = read_C(a);
         // Discard `false` nodes in an `or` chain.
-        if (q->type != c_false) {
+        if (!is_just_false(q)) {
             if (p_end) {
                 p_end->right = q;
             } else {
@@ -746,6 +760,10 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
     x->in_routine = a->current_routine;
 
     if (q->type == c_bra) {
+        fprintf(stderr,
+                "%s:%d: warning: among starter is a legacy feature - put "
+                "starter code between `substring` and `among` instead\n",
+                a->tokeniser->file, q->line_number);
         starter = q;
         p->left = q = q->right;
     }
@@ -916,10 +934,25 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
         // express a single rule in Snowball code as it can show commonality
         // with rulesets with multiple rules, but it's silly to actually
         // generate as an among.
+        //
+        // We handle an `among` which only has the empty string here - this is
+        // syntactically valid but is not a useful construct so we warn about
+        // it.
         if (substring) {
             substring->among = NULL;
-            substring->type = c_literalstring;
-            substring->literalstring = v[0].b;
+            if (SIZE(v[0].b) == 0) {
+                // substring ... among ( '' (C) )
+                //
+                // becomes:
+                //
+                // ... (C)
+                fprintf(stderr, "%s:%d: warning: `among` with only empty string always matches\n",
+                        a->tokeniser->file, p->line_number);
+                substring->type = c_true;
+            } else {
+                substring->type = c_literalstring;
+                substring->literalstring = v[0].b;
+            }
             if (v[0].action) {
                 // substring ... among ( S (C) )
                 //
@@ -944,19 +977,30 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
                 // (S C)
                 p = v[0].action;
                 assert(p->type == c_bra);
-                // Insert a c_literalstring node at the start of (C)
-                struct node * literalstring = new_node(a, c_literalstring);
-                literalstring->literalstring = v[0].b;
-                literalstring->right = p->left;
-                p->left = literalstring;
+                if (SIZE(v[0].b) == 0) {
+                    fprintf(stderr, "%s:%d: warning: `among` with only empty string always matches\n",
+                            a->tokeniser->file, p->line_number);
+                } else {
+                    // Insert a c_literalstring node at the start of (C)
+                    struct node * literalstring = new_node(a, c_literalstring);
+                    literalstring->literalstring = v[0].b;
+                    literalstring->right = p->left;
+                    p->left = literalstring;
+                }
             } else {
                 // among ( S )
                 //
                 // becomes:
                 //
                 // S
-                p->type = c_literalstring;
-                p->literalstring = v[0].b;
+                if (SIZE(v[0].b) == 0) {
+                    fprintf(stderr, "%s:%d: warning: `among` with only empty string always matches\n",
+                            a->tokeniser->file, p->line_number);
+                    p->type = c_true;
+                } else {
+                    p->type = c_literalstring;
+                    p->literalstring = v[0].b;
+                }
                 p->left = NULL;
             }
         }
@@ -1013,7 +1057,8 @@ static struct node * read_among(struct analyser * a) {
                 } else {
                     hold_token(t);
                 }
-                p->number++; break;
+                p->number++;
+                break;
             case c_bra:
                 if (previous_token == c_bra) {
                     report_error_location(a);
@@ -1206,7 +1251,7 @@ static struct node * read_C(struct analyser * a) {
                         // `loop N C`, where N <= 0 is a no-op.
                         if (n->AE->fixed_constant) {
                             fprintf(stderr,
-                                    "%s:%d: warning: loop %d C is a no-op\n",
+                                    "%s:%d: warning: `loop %d C` is a no-op\n",
                                     t->file, n->AE->line_number, n->AE->number);
                         }
                         n->AE = NULL;
@@ -1237,7 +1282,8 @@ static struct node * read_C(struct analyser * a) {
             return n;
         }
         case c_setmark: {
-            struct node * n = new_node(a, token);
+            struct node * n = new_node(a, c_assign);
+            n->AE = new_node(a, c_cursor);
             if (get_token(a, c_name)) {
                 name_to_node(a, n, t_integer);
                 if (n->name) n->name->initialised = true;
@@ -1245,7 +1291,7 @@ static struct node * read_C(struct analyser * a) {
             return n;
         }
         case c_atmark: {
-            struct node * n = new_node(a, token);
+            struct node * n = new_node(a, c_eq);
             struct node * AE = read_AE(a, NULL, 0);
             if (AE->type == c_cursor) {
                 fprintf(stderr,
@@ -1253,6 +1299,7 @@ static struct node * read_C(struct analyser * a) {
                         t->file, n->line_number);
                 n->type = c_true;
             } else {
+                n->left = new_node_at_line(a, c_cursor, n->line_number);
                 n->AE = AE;
             }
             return n;
@@ -1282,7 +1329,7 @@ static struct node * read_C(struct analyser * a) {
                 } else if (n->AE->number == 0) {
                     if (n->AE->fixed_constant) {
                         fprintf(stderr,
-                                "%s:%d: warning: hop 0 is a no-op\n",
+                                "%s:%d: warning: `hop 0` is a no-op\n",
                                 t->file, n->AE->line_number);
                     }
                     n->AE = NULL;
@@ -1304,12 +1351,18 @@ static struct node * read_C(struct analyser * a) {
             /* fall through */
         case c_next:
         case c_tolimit:
-        case c_atlimit:
         case c_leftslice:
         case c_rightslice:
         case c_true:
         case c_false:
             return new_node(a, token);
+        case c_atlimit: {
+            int mode = a->mode;
+            struct node * n = new_node(a, mode == m_forward ? c_ge : c_le);
+            n->left = new_node_at_line(a, c_cursor, n->line_number);
+            n->AE = new_node_at_line(a, c_limit, n->line_number);
+            return n;
+        }
         case c_debug:
             a->debug_used = true;
             return new_node(a, token);
@@ -1338,7 +1391,24 @@ static struct node * read_C(struct analyser * a) {
         case c_slicefrom: {
             check_modifyable(a);
             struct node * n = new_string_command(a, token);
-            if (n->name) n->name->value_used = true;
+            if (n->name) {
+                n->name->value_used = true;
+            } else if (n->literalstring == NULL || SIZE(n->literalstring) == 0) {
+                switch (token) {
+                  case c_insert:
+                  case c_attach:
+                    fprintf(stderr,
+                            "%s:%d: warning: `%s ''` is a no-op\n",
+                            t->file, n->line_number, name_of_token(token));
+                    n->type = c_true;
+                    n->literalstring = NULL;
+                    break;
+                  case c_slicefrom:
+                    // Canonicalise `<-''` to `delete`.
+                    n->type = c_delete;
+                    n->literalstring = NULL;
+                }
+            }
             return n;
         }
         case c_setlimit: {
@@ -1371,7 +1441,7 @@ static struct node * read_C(struct analyser * a) {
                 struct node * n = read_AE(a, NULL, 0);
                 read_token(t);
                 token = t->token;
-                int eval_constant_expr = false;
+                bool eval_constant_expr = false;
                 switch (token) {
                     case c_assign:
                         // Assume `==` was meant to try to avoid an error avalanche.
@@ -1596,49 +1666,47 @@ handle_rel_op: ;
             if (q) mark_used_in(a, q, p);
             return p;
         }
-        case c_name:
-            {
-                struct name * q = find_name(a);
-                struct node * p = new_node(a, c_name);
-                if (q) {
-                    mark_used_in(a, q, p);
-                    switch (q->type) {
-                        case t_boolean:
-                            p->type = c_booltest;
-                            q->value_used = true;
-                            break;
-                        case t_integer:
-                            report_error_location(a);
-                            fprintf(stderr, "integer name '%.*s' misplaced\n",
-                                    SIZE(t->s), t->s);
-                            break;
-                        case t_string:
-                            q->value_used = true;
-                            break;
-                        case t_routine:
-                        case t_external:
-                            p->type = c_call;
-                            check_routine_mode(a, q, a->mode);
-                            break;
-                        case t_grouping:
-                            p->type = c_grouping; break;
-                    }
+        case c_name: {
+            struct name * q = find_name(a);
+            struct node * p = new_node(a, c_name);
+            if (q) {
+                mark_used_in(a, q, p);
+                switch (q->type) {
+                    case t_boolean:
+                        p->type = c_booltest;
+                        q->value_used = true;
+                        break;
+                    case t_integer:
+                        report_error_location(a);
+                        fprintf(stderr, "integer name '%.*s' misplaced\n",
+                                SIZE(t->s), t->s);
+                        break;
+                    case t_string:
+                        q->value_used = true;
+                        break;
+                    case t_routine:
+                    case t_external:
+                        p->type = c_call;
+                        check_routine_mode(a, q, a->mode);
+                        break;
+                    case t_grouping:
+                        p->type = c_grouping;
+                        break;
                 }
-                p->name = q;
+            }
+            p->name = q;
+            return p;
+        }
+        case c_non: {
+            struct node * p = new_node(a, token);
+            read_token(t);
+            if (t->token == c_minus) read_token(t);
+            if (!check_token(a, c_name)) {
                 return p;
             }
-        case c_non:
-            {
-                struct node * p = new_node(a, token);
-                read_token(t);
-                if (t->token == c_minus) read_token(t);
-                if (!check_token(a, c_name)) {
-                    hold_token(t);
-                    return p;
-                }
-                name_to_node(a, p, t_grouping);
-                return p;
-            }
+            name_to_node(a, p, t_grouping);
+            return p;
+        }
         case c_literalstring: {
             struct node * p = read_literalstring(a);
             if (SIZE(p->literalstring) == 0) {
@@ -1727,7 +1795,7 @@ static int finalise_grouping(struct grouping * p) {
 static void read_define_grouping(struct analyser * a, struct name * q) {
     struct tokeniser * t = a->tokeniser;
     int style = c_plus;
-    int check_nonempty = true;
+    bool check_nonempty = true;
     {
         NEW(grouping, p);
         *p = (struct grouping){0};
@@ -1744,7 +1812,7 @@ static void read_define_grouping(struct analyser * a, struct name * q) {
         p->name = q;
         p->line_number = t->line_number;
         p->b = create_b(0);
-        while (true) {
+        do {
             switch (read_token(t)) {
                 case c_name: {
                     struct name * r = find_name(a);
@@ -1768,9 +1836,33 @@ static void read_define_grouping(struct analyser * a, struct name * q) {
                     r->used_in_definition = true;
                     break;
                 }
-                case c_literalstring:
+                case c_literalstring: {
+                    int utf8 = (a->encoding == ENC_UTF8);
+                    int i = 0;
+                    while (i < SIZE(t->b)) {
+                        symbol ch_i;
+                        int width_i = next_symbol(t->b + i, &ch_i, utf8);
+                        int j = 0;
+                        while (j < i) {
+                            symbol ch_j;
+                            int width_j = next_symbol(t->b + j, &ch_j, utf8);
+                            if (ch_i == ch_j) {
+                                fprintf(stderr, "%s:%d: warning: Duplicate "
+                                                "character in grouping: ",
+                                        t->file, t->line_number);
+                                if (ch_i >= 32 && ch_i < 127) {
+                                    fprintf(stderr, "'%c'\n", ch_i);
+                                } else {
+                                    fprintf(stderr, "U+%04X\n", ch_i);
+                                }
+                            }
+                            j += width_j;
+                        }
+                        i += width_i;
+                    }
                     p->b = alter_grouping(p->b, t->b, style, (a->encoding == ENC_UTF8));
                     break;
+                }
                 default:
                     unexpected_token_error(a, "grouping definition");
                     hold_token_if_toplevel(t);
@@ -1778,13 +1870,8 @@ static void read_define_grouping(struct analyser * a, struct name * q) {
                     (void)finalise_grouping(p);
                     return;
             }
-            switch (read_token(t)) {
-                case c_plus:
-                case c_minus: style = t->token; break;
-                default: goto label0;
-            }
-        }
-    label0:
+            style = read_token(t);
+        } while (style == c_plus || style == c_minus);
         if (!finalise_grouping(p)) {
             if (check_nonempty) {
                 report_error_location_line(a, p->line_number);
@@ -1886,7 +1973,6 @@ static void read_backwardmode(struct analyser * a) {
     a->mode = m_backward;
     if (get_token(a, c_bra)) {
         read_program_(a, c_ket);
-        check_token(a, c_ket);
     }
     a->mode = mode;
 }
@@ -1909,6 +1995,8 @@ static void read_program_(struct analyser * a, int terminator) {
                 unexpected_token_error(a, 0);
                 break;
             case -1:
+                if (terminator != -1)
+		    omission_error(a, terminator);
                 return;
         }
     }
@@ -1924,7 +2012,6 @@ static void remove_dead_assignments(struct node * p, struct name * q) {
             case c_minusassign:
             case c_multiplyassign:
             case c_divideassign:
-            case c_setmark:
             case c_set:
             case c_unset:
             case c_dollar:
@@ -1985,7 +2072,7 @@ static int always_set_before_use_(struct node * p, struct node * func,
             return UNKNOWN;
         }
         case c_among: {
-            int all_pass = true;
+            bool all_pass = true;
             struct among * x = p->among;
             for (int i = 1; i <= x->command_count; i++) {
                 int r = always_set_before_use_(x->commands[i - 1], func, v);
@@ -1997,7 +2084,7 @@ static int always_set_before_use_(struct node * p, struct node * func,
         }
         case c_or: {
             struct node * q = p->left;
-            int all_pass = true;
+            bool all_pass = true;
             while (q) {
                 int r = always_set_before_use_(q, func, v);
                 if (r == USE_BEFORE_SET) return r;
@@ -2046,13 +2133,11 @@ static int always_set_before_use_(struct node * p, struct node * func,
             return UNKNOWN;
         case c_assignto:
         case c_set:
-        case c_setmark:
         case c_sliceto:
         case c_unset:
             if (p->name == v)
                 return SET_BEFORE_ANY_USE;
             return UNKNOWN;
-        case c_atlimit:
         case c_delete:
         case c_grouping:
         case c_leftslice:
@@ -2071,7 +2156,6 @@ static int always_set_before_use_(struct node * p, struct node * func,
         case c_goto_non:
         case c_gopast_non:
             return UNKNOWN;
-        case c_atmark:
         case c_hop:
         case c_tomark:
             if (always_set_before_use_(p->AE, func, v) == USE_BEFORE_SET)
@@ -2174,6 +2258,12 @@ static int always_set_before_use_(struct node * p, struct node * func,
             // These are only use in the tokeniser.
             assert(0);
             break;
+        case c_atlimit:
+        case c_atmark:
+        case c_setmark:
+            // These are only use in the tokeniser and analyser.
+            assert(0);
+            break;
         case c_as:
         case c_for:
         case c_ket:
@@ -2220,7 +2310,6 @@ static int check_possible_signals(struct analyser * a, struct node * p) {
         case c_leftslice:
         case c_rightslice:
         case c_set:
-        case c_setmark:
         case c_slicefrom:
         case c_sliceto:
         case c_tolimit:
@@ -2347,8 +2436,6 @@ static int check_possible_signals(struct analyser * a, struct node * p) {
             /* FIXME: unless we can prove that c is either definitely atlimit
              * or definitely not atlimit... */
             return -1;
-        case c_atlimit:
-        case c_atmark:
         case c_booltest:
         case c_not_booltest:
         case c_hop:
@@ -2383,8 +2470,8 @@ static int check_possible_signals(struct analyser * a, struct node * p) {
             }
 
             if (x->command_count > 0) {
-                int trues = (x->nocommand_count > 0);
-                int falses = false;
+                bool trues = (x->nocommand_count > 0);
+                bool falses = false;
                 for (int i = 1; i <= x->command_count; i++) {
                     int res = x->commands[i - 1]->possible_signals;
                     if (res == 0) {
@@ -2491,6 +2578,15 @@ static void visit_node(struct analyser * a, struct node * p) {
             p->right = p_right;
             p->next = p_next;
             *p_left = tmp;
+            if (p->type == c_among) {
+                // Update struct among's node pointer.
+                for (struct among * q = a->amongs; q; q = q->next) {
+                    if (q->node == p_left) {
+                        q->node = p;
+                        break;
+                    }
+                }
+            }
         }
 
         p = p->right;
@@ -2527,7 +2623,7 @@ extern void read_program(struct analyser * a, unsigned localise_mask) {
         // a warning later on if there are no errors.
         if (!q->used) continue;
 
-        int error = false;
+        bool error = false;
         switch (q->type) {
             case t_external: case t_routine:
                 error = (q->definition == NULL);

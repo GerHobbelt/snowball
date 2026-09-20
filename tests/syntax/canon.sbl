@@ -1,0 +1,24 @@
+// Test canonicalisation of commands.
+externals (stem)
+integers (x y)
+define stem as (
+  $x = cursor
+  setmark y
+
+  try 'a'
+
+  atmark x
+  $(cursor == y)
+
+  atlimit
+  $(cursor >= limit)
+
+  // `<-''` is the same as `delete`.
+  // `hop 1` is the same as `next`
+  [substring] among (
+    'a' (delete next)
+    'b' (<-''  hop 1)
+  )
+
+  $(x == y)
+)
