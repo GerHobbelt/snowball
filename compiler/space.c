@@ -1,5 +1,6 @@
 
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>    /* for printf */
 #include <stdlib.h>   /* malloc, free */
 #include <string.h>   /* memmove */
@@ -119,8 +120,25 @@ extern void check_free(void * p) {
     free(p);
 }
 
-/* To convert a block to a zero terminated string:  */
+extern int checked_snprintf(char *str, size_t size,
+                            const char *restrict format, ...) {
+    va_list ap;
+    va_start(ap, format);
+    int r = vsnprintf(str, size, format, ap);
+    va_end(ap);
+    // Some pre-C99 snprintf implementations return -1 if the buffer is too
+    // small so cast to unsigned for a simpler test (we require C99, but better
+    // to be robust if we encounter a C99 compiler with pre-C99 quirks in its
+    // runtime library).
+    if ((unsigned)r >= size) {
+        fprintf(stderr, "snprintf(buf, %zu, \"%s\", ...) would overflow\n",
+                size, format);
+        exit(1);
+    }
+    return r;
+}
 
+/* Convert a block to a zero terminated string. */
 extern char * b_to_sz(const symbol * p) {
     int n = SIZE(p);
     char * s = (char *)xmalloc(n + 1);
@@ -135,9 +153,7 @@ extern char * b_to_sz(const symbol * p) {
     return s;
 }
 
-/* Add a single symbol to a block. If p = 0 the
-   block is created. */
-
+/* Add a single symbol to a block. If p = 0 the block is created. */
 extern symbol * add_symbol_to_b(symbol * p, symbol ch) {
     if (p == NULL) p = create_b(1);
     int k = SIZE(p);
@@ -296,13 +312,8 @@ extern void str_append_int(struct str * str, int i) {
     // Ensure there's enough space then snprintf() directly onto the end.
     int max_size = (CHAR_BIT * sizeof(int) + 5) / 3;
     str->data = ensure_capacity_s(str->data, max_size);
-    int r = snprintf((char*)str->data + SIZE(str->data), max_size, "%d", i);
-    // Some pre-C99 snprintf implementations return -1 if the buffer is too
-    // small so cast to unsigned for a simpler test.
-    if ((unsigned)r >= (unsigned)max_size) {
-        fprintf(stderr, "str_append_int(%d) would truncate output\n", i);
-        exit(1);
-    }
+    int r = checked_snprintf((char*)str->data + SIZE(str->data), max_size,
+                             "%d", i);
     ADD_TO_SIZE(str->data, r);
 }
 

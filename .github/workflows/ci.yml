@@ -65,18 +65,25 @@ jobs:
         - name: rust
           RUST: rust
           apt_packages: 'rustc'
+        - name: zig
+          ZIG: zig
         - name: csharp
           MCS: mcs
           apt_packages: 'mono-devel'
         - name: Pascal
           FPC: fpc
           apt_packages: 'fpc'
-        - name: PHP 8.4
-          PHP: php
-          apt_packages: 'php php-mbstring'
-        - name: PHP 8.3
+        - name: PHP 8.5
           PHP: php
           apt_extra_repo: ppa:ondrej/php
+          apt_packages: 'php8.5-cli php8.5-mbstring'
+        - name: PHP 8.4
+          PHP: php
+          apt_extra_repo: ppa:ondrej/php
+          apt_packages: 'php8.4-cli php8.4-mbstring'
+        - name: PHP 8.3
+          PHP: php
+          os: 'ubuntu-24.04'
           apt_packages: 'php8.3-cli php8.3-mbstring'
         - name: Python 3.8
           PYTHON_VERSION: 3.8
@@ -201,6 +208,11 @@ jobs:
       uses: dart-lang/setup-dart@v1
       with:
         sdk: ${{ matrix.dart_sdk }}
+    - name: Install Zig
+      if: matrix.ZIG
+      uses: mlugg/setup-zig@v2
+      with:
+        version: master
     - name: Install mingw64 packages
       if: matrix.mingw64_packages
       uses: msys2/setup-msys2@v2
@@ -222,7 +234,7 @@ jobs:
     - name: Test C
       if: matrix.c_tests
       run: $MAKE check CC="$CC"
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.PYTHON_VERSION }}
       if: matrix.PYTHON_VERSION
@@ -260,7 +272,12 @@ jobs:
       run: $MAKE check_pascal FPC="${{ matrix.FPC }}"
     - name: Test PHP
       if: matrix.PHP
-      run: $MAKE check_php PHP="${{ matrix.PHP }}"
+      run: |
+        ${{ matrix.PHP }} --version
+        $MAKE check_php PHP="${{ matrix.PHP }}"
+    - name: Test Zig
+      if: matrix.ZIG
+      run: $MAKE check_zig zig="${{ matrix.ZIG }}"
     - name: Test Ada
       if: matrix.gprbuild
       run: $MAKE check_ada gprbuild="${{ matrix.gprbuild }}"

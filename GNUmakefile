@@ -44,7 +44,8 @@ csharp_sample_dir = csharp/Stemwords
 
 # Dart
 
-DART ?= dart run --enable-asserts
+DART ?= dart
+DART_RUN_FLAGS ?= --enable-asserts
 dart_src_main_dir = dart/lib
 dart_src_dir = $(dart_src_main_dir)/ext
 dart_runtime_dir = dart/lib/src
@@ -103,6 +104,11 @@ cargoflags ?= --release
 rust_src_main_dir = rust/src
 rust_src_dir = $(rust_src_main_dir)/snowball/algorithms
 
+# Zig
+
+zig ?= zig
+zig_src_dir = zig
+
 DIFF = diff
 ifeq ($(OS),Windows_NT)
 DIFF = diff --strip-trailing-cr
@@ -146,6 +152,7 @@ COMPILER_SOURCES = compiler/analyser.c \
 		   compiler/driver.c \
 		   compiler/generator.c \
 		   compiler/generator_ada.c \
+		   compiler/generator_c.c \
 		   compiler/generator_csharp.c \
 		   compiler/generator_dart.c \
 		   compiler/generator_go.c \
@@ -155,6 +162,7 @@ COMPILER_SOURCES = compiler/analyser.c \
 		   compiler/generator_php.c \
 		   compiler/generator_python.c \
 		   compiler/generator_rust.c \
+		   compiler/generator_zig.c \
 		   compiler/space.c \
 		   compiler/tokeniser.c
 
@@ -263,6 +271,8 @@ JS_SOURCES = $(libstemmer_algorithms:%=$(js_output_dir)/%-stemmer.js) \
 PHP_SOURCES = $(libstemmer_algorithms:%=$(php_output_dir)/%-stemmer.php) \
 	$(php_output_dir)/base-stemmer.php
 RUST_SOURCES = $(libstemmer_algorithms:%=$(rust_src_dir)/%_stemmer.rs)
+ZIG_SOURCES = $(libstemmer_algorithms:%=$(zig_src_dir)/%_stemmer.zig) \
+	$(zig_src_dir)/algorithms.zig
 GO_SOURCES = $(libstemmer_algorithms:%=$(go_src_dir)/%_stemmer.go) \
 	$(go_src_main_dir)/stemwords/algorithms.go
 ADA_SOURCES = $(libstemmer_algorithms:%=$(ada_src_dir)/stemmer-%.ads) \
@@ -309,6 +319,7 @@ clean:
 	      $(PHP_SOURCES) \
 	      $(PYTHON_SOURCES) \
 	      $(RUST_SOURCES) \
+	      $(ZIG_SOURCES) zig/stemwords$(EXEEXT) \
 	      stemtest$(EXEEXT) $(STEMTEST_OBJECTS) \
               libstemmer/mkinc.mak libstemmer/mkinc_utf8.mak \
               libstemmer/libstemmer.c libstemmer/libstemmer_utf8.c \
@@ -327,16 +338,24 @@ update_version:
 		dart/pubspec.yaml \
 		python/setup.py
 
-everything: ada all csharp dart go java js pascal python rust
+# Generate code for all languages.
+everything: ada all csharp dart go java js pascal python rust zig
+
+# The directories where generated code goes for all languages.
+ALL_CODE_DIRS := \
+	ada src_c csharp dart go java js_out pascal python_out rust zig
+
+# When runtime tests are enabled, this gets overridden by overrides.mk.
+BASELINE ?= baseline
 
 baseline-create: everything
-	rm -rf *.baseline
-	for d in ada src_c csharp dart go java js_out pascal python_out rust ; do cp -a $$d $$d.baseline ; done
-	rm -rf *.baseline/*.o ada.baseline/obj pascal.baseline/*.ppu
-	find java.baseline -name '*.class' -delete
+	rm -rf *.$(BASELINE)
+	for d in $(ALL_CODE_DIRS) ; do cp -a $$d $$d.$(BASELINE) ; done
+	rm -rf *.$(BASELINE)/*.o ada.$(BASELINE)/obj pascal.$(BASELINE)/*.ppu
+	find java.$(BASELINE) -name '*.class' -delete
 
 baseline-diff:
-	@for d in ada src_c csharp dart go java js_out pascal python_out rust ; do diff -ru -x'*.o' -x'obj' -x'*.ppu' -x'*.class' -x'Cargo.lock' -x 'target' $$d.baseline $$d ; done
+	@for d in $(ALL_CODE_DIRS) ; do diff -ru -x'*.o' -x'obj' -x'*.ppu' -x'*.class' -x'Cargo.lock' -x'target' $$d.$(BASELINE) $$d ; done
 
 .PHONY: all clean update_version everything baseline-create baseline-diff
 
@@ -487,7 +506,7 @@ $(php_output_dir)/base-stemmer.php: $(php_runtime_dir)/base-stemmer.php
 
 $(python_output_dir)/%_stemmer.py: $(ALGORITHMS)/%.sbl snowball$(EXEEXT)
 	@mkdir -p $(python_output_dir)
-	$(SNOWBALL_COMPILE) $< -python -o $@
+	$(SNOWBALL_COMPILE) $< -python -eprefix _ -o $@
 
 $(python_output_dir)/__init__.py: python/create_init.py $(libstemmer_algorithms:%=$(python_output_dir)/%_stemmer.py)
 	$(python) python/create_init.py $(python_output_dir)
@@ -497,6 +516,15 @@ $(python_output_dir)/__init__.py: python/create_init.py $(libstemmer_algorithms:
 $(rust_src_dir)/%_stemmer.rs: $(ALGORITHMS)/%.sbl snowball$(EXEEXT)
 	@mkdir -p $(rust_src_dir)
 	$(SNOWBALL_COMPILE) $< -rust -o $@
+
+# Zig
+
+$(zig_src_dir)/%_stemmer.zig: $(ALGORITHMS)/%.sbl snowball$(EXEEXT)
+	@mkdir -p $(zig_src_dir)
+	$(SNOWBALL_COMPILE) $< -zig -o $@
+
+$(zig_src_dir)/algorithms.zig: zig/generate_algorithms.pl libstemmer/modules.txt
+	zig/generate_algorithms.pl $(libstemmer_algorithms) > $@
 
 .PHONY: dist dist_snowball dist_libstemmer_c dist_libstemmer_csharp dist_libstemmer_dart dist_libstemmer_java dist_libstemmer_js dist_libstemmer_python dist_libstemmer_php
 
@@ -832,7 +860,7 @@ dart: $(DART_SOURCES) dart/.dart_deps
 
 dart/.dart_deps: dart/pubspec.yaml
 	@echo "Fetching Dart package dependencies..."
-	@cd dart && dart pub get
+	@cd dart && $(DART) pub get
 	@touch $@
 
 check_dart: dart
@@ -844,10 +872,10 @@ check_dart_%: $(STEMMING_DATA_ABS)/%
 	@echo "Checking output of $* stemmer for Dart"
 	@cd dart && if test -f '$</voc.txt.gz' ; then \
 	  gzip -dc '$</voc.txt.gz' |\
-	    $(DART) example/test_app.dart $* -o $(PWD)/tmp.txt; \
+	    $(DART) run $(DART_RUN_FLAGS) example/test_app.dart $* -o $(PWD)/tmp.txt; \
 	  gzip -dc '$</output.txt.gz'|$(DIFF) -u - $(PWD)/tmp.txt; \
 	else \
-	  $(DART) example/test_app.dart $* $</voc.txt |\
+	  $(DART) run $(DART_RUN_FLAGS) example/test_app.dart $* $</voc.txt |\
 	      $(DIFF) -u $</output.txt - ;\
 	fi
 	@if test -f '$</voc.txt.gz' ; then rm tmp.txt ; fi
@@ -1035,6 +1063,34 @@ check_rust_%: $(STEMMING_DATA_ABS)/%
 	@if test -f '$</voc.txt.gz' ; then rm tmp.txt ; fi
 
 ###############################################################################
+# Zig
+###############################################################################
+
+.PHONY: zig check_zig do_check_zig
+
+zig: $(ZIG_SOURCES)
+
+zig/stemwords$(EXEEXT): $(ZIG_SOURCES) zig/stemwords.zig zig/env.zig
+	cd $(zig_src_dir) && $(zig) build-exe -OReleaseFast stemwords.zig
+
+check_zig: zig zig/stemwords$(EXEEXT)
+	$(MAKE) do_check_zig
+
+do_check_zig: $(libstemmer_algorithms:%=check_zig_%)
+
+check_zig_%: $(STEMMING_DATA_ABS)/%
+	@echo "Checking output of $* stemmer for Zig"
+	@if test -f '$</voc.txt.gz' ; then \
+	  gzip -dc '$</voc.txt.gz' |\
+	      ./zig/stemwords$(EXEEXT) -l $* -o tmp.txt; \
+	  gzip -dc '$</output.txt.gz'|$(DIFF) -u - tmp.txt; \
+	else \
+	  ./zig/stemwords$(EXEEXT) -l $* -i $</voc.txt |\
+	      $(DIFF) -u $</output.txt - ;\
+	fi
+	@if test -f '$</voc.txt.gz' ; then rm tmp.txt ; fi
+
+###############################################################################
 # Runtime tests
 ###############################################################################
 
@@ -1064,7 +1120,7 @@ setup_runtime_tests: clean_runtime_tests
 	  echo ok > $$r/$$d/output.txt ;\
 	  echo "$$d UTF_8,ISO_8859_1 $$d" >> $$r/modules.txt ;\
 	done
-	printf '%s:=%s\n' STEMMING_DATA $(RUNTIME_DATA_DIR) ALGORITHMS tests/runtime  MODULES $(RUNTIME_DATA_DIR)/modules.txt THIN_FACTOR '' other_algorithms > overrides.mk
+	printf '%s:=%s\n' BASELINE rbaseline STEMMING_DATA $(RUNTIME_DATA_DIR) ALGORITHMS tests/runtime MODULES $(RUNTIME_DATA_DIR)/modules.txt THIN_FACTOR '' other_algorithms > overrides.mk
 	rm -f algorithms.mk
 	$(MAKE) algorithms.mk
 

@@ -1,53 +1,38 @@
 #include <assert.h>
+#include <ctype.h>
+#include <stdio.h> /* for fprintf etc */
 #include <stdlib.h> /* for exit */
 #include <string.h> /* for strlen */
-#include <stdio.h> /* for fprintf etc */
 #include "header.h"
 
 #define BASE_UNIT   "SnowballProgram"
 #define BASE_CLASS  "T" BASE_UNIT
 
-/* prototypes */
+/* prototype functions for recursive use: */
 
 static void generate(struct generator * g, struct node * p);
 static void w(struct generator * g, const char * s);
 static void writef(struct generator * g, const char * s, struct node * p);
 
-static int new_label(struct generator * g) {
-    return g->next_label++;
-}
-
-static struct str * vars_newname(struct generator * g) {
-    struct str * output;
-    g->var_number++;
-    output = str_new();
-    str_append_string(output, "v_");
-    str_append_int(output, g->var_number);
-    return output;
-}
-
 /* Write routines for items from the syntax tree */
 
 static void write_varname(struct generator * g, struct name * p) {
-    if (p->type != t_external) {
+    if (p->type == t_external) {
+        if (g->options->externals_prefix) {
+            write_string(g, g->options->externals_prefix);
+        }
+    } else {
         /* Pascal identifiers are case-insensitive but Snowball identifiers
-         * should be case-sensitive.  To address this, we encode the case of
-         * the identifier.  For readability of the generated code, the
-         * encoding tries to be minimally intrusive for common cases.
+         * should be case-sensitive.  To address this, if any groups of
+         * identifiers of the same type have the same case, we insert a counter
+         * after the type-code for all but one of them.  This count is unique
+         * within each type of variable so this avoid collisions while being
+         * minimally intrusive on the readability of the generated code.
          *
-         * After the letter which indicates the type and before the "_" we
-         * encode the case pattern in the Snowball identifier using "U" for
-         * an upper-case letter, "l" for a lower-case letter and nothing for
-         * other characters.  Any trailing string of "l" is omitted (since
-         * it's redundant and decreases readability).
+         * So for example:
          *
-         * Identifiers without any upper-case encode most simply, e.g. I_foo2
-         *
-         * A capitalised identifier is also concise, e.g. IU_Foo2
-         *
-         * All-caps gives a string of Us, e.g. IUUUUUUUU_SHOUTING
-         *
-         * But any example can be handled, e.g. IUllU_Foo79_Bar
+         * Snowball integer `i` -> Pascal `I_i`
+         * Snowball integer `I` -> Pascal `I2_i`
          *
          * We don't try to solve this problem for external identifiers - it
          * seems more helpful to leave those alone and encourage snowball
@@ -56,22 +41,10 @@ static void write_varname(struct generator * g, struct name * p) {
          *
          * We use the same naming scheme for both global and local variables.
          */
-        int len = SIZE(p->s);
-        int lower_pending = 0;
         write_char(g, "SBIrxg"[p->type]);
-        for (int i = 0; i != len; ++i) {
-            int ch = p->s[i];
-            if (ch >= 'a' && ch <= 'z') {
-                ++lower_pending;
-            } else if (ch >= 'A' && ch <= 'Z') {
-                while (lower_pending) {
-                    write_char(g, 'l');
-                    --lower_pending;
-                }
-                write_char(g, 'U');
-            }
+        if (p->case_collision) {
+            write_int(g, p->count);
         }
-
         write_char(g, '_');
     }
     write_s(g, p->s);
@@ -93,10 +66,6 @@ static void write_literal_string(struct generator * g, symbol * p) {
         }
     }
     write_char(g, '\'');
-}
-
-static void write_margin(struct generator * g) {
-    for (int i = 0; i < g->margin; i++) write_string(g, "    ");
 }
 
 static void write_relop(struct generator * g, int relop) {
@@ -186,16 +155,15 @@ static void write_failure(struct generator * g) {
     switch (g->failure_label) {
         case x_return:
             write_string(g, "Begin Result := False; Exit; End;");
-            g->unreachable = true;
             break;
         default:
             write_string(g, "goto lab");
             write_int(g, g->failure_label);
             write_string(g, ";");
             g->label_used = 1;
-            g->unreachable = true;
     }
     write_newline(g);
+    g->unreachable = true;
 }
 
 static void write_failure_if(struct generator * g, const char * s, struct node * p) {
@@ -219,7 +187,6 @@ static void write_check_limit(struct generator * g, struct node * p) {
 
 /* Formatted write. */
 static void writef(struct generator * g, const char * input, struct node * p) {
-    (void)p;
     int i = 0;
 
     while (input[i]) {
@@ -297,30 +264,45 @@ static void generate_AE(struct generator * g, struct node * p) {
     const char * s;
     switch (p->type) {
         case c_name:
-            write_varname(g, p->name); break;
+            write_varname(g, p->name);
+            break;
         case c_number:
-            write_int(g, p->number); break;
+            write_int(g, p->number);
+            break;
         case c_maxint:
-            write_string(g, "MAXINT"); break;
+            write_string(g, "MAXINT");
+            break;
         case c_minint:
-            write_string(g, "(-MAXINT - 1)"); break;
+            write_string(g, "(-MAXINT - 1)");
+            break;
         case c_neg:
-            write_char(g, '-'); generate_AE(g, p->right); break;
+            write_char(g, '-');
+            generate_AE(g, p->right);
+            break;
         case c_multiply:
-            s = " * "; goto label0;
-        case c_plus:
-            s = " + "; goto label0;
-        case c_minus:
-            s = " - "; goto label0;
+            s = " * ";
+            goto label0;
         case c_divide:
             s = " div ";
+            goto label0;
+        case c_plus:
+            s = " + ";
+            goto label0;
+        case c_minus:
+            s = " - ";
         label0:
-            write_char(g, '('); generate_AE(g, p->left);
-            write_string(g, s); generate_AE(g, p->right); write_char(g, ')'); break;
+            write_char(g, '(');
+            generate_AE(g, p->left);
+            write_string(g, s);
+            generate_AE(g, p->right);
+            write_char(g, ')');
+            break;
         case c_cursor:
-            w(g, "FCursor"); break;
+            w(g, "FCursor");
+            break;
         case c_limit:
-            w(g, p->mode == m_forward ? "FLimit" : "FBkLimit"); break;
+            w(g, p->mode == m_forward ? "FLimit" : "FBkLimit");
+            break;
         case c_len:
         case c_size:
             w(g, "Length(current)");
@@ -349,7 +331,9 @@ static void generate_and(struct generator * g, struct node * p) {
 
     write_comment(g, p);
 
-    if (savevar) write_savecursor(g, p, savevar);
+    if (savevar) {
+        write_savecursor(g, p, savevar);
+    }
 
     p = p->left;
     while (p) {
@@ -379,7 +363,9 @@ static void generate_or(struct generator * g, struct node * p) {
     write_comment(g, p);
     w(g, "~MRepeat~N~+");
 
-    if (savevar) write_savecursor(g, p, savevar);
+    if (savevar) {
+        write_savecursor(g, p, savevar);
+    }
 
     p = p->left;
     str_clear(g->failure_str);
@@ -390,8 +376,9 @@ static void generate_or(struct generator * g, struct node * p) {
         fprintf(stderr, "Error: \"or\" node without children nodes.");
         exit(1);
     }
-    while (p->right) {
-        g->failure_label = new_label(g);
+    while (p->right != NULL) {
+        int label = new_label(g);
+        g->failure_label = label;
         g->label_used = 0;
         generate(g, p);
         if (!g->unreachable) {
@@ -402,7 +389,9 @@ static void generate_or(struct generator * g, struct node * p) {
         if (g->label_used)
             wsetl(g, g->failure_label);
         g->unreachable = false;
-        if (savevar) write_restorecursor(g, p, savevar);
+        if (savevar) {
+            write_restorecursor(g, p, savevar);
+        }
         p = p->right;
     }
 
@@ -429,7 +418,6 @@ static void generate_backwards(struct generator * g, struct node * p) {
     generate(g, p->left);
     w(g, "~MFCursor := FBkLimit;~N");
 }
-
 
 static void generate_not(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
@@ -470,14 +458,14 @@ static void generate_not(struct generator * g, struct node * p) {
     }
 }
 
-
 static void generate_try(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
     if (K_needed(g, p->left)) {
         savevar = vars_newname(g);
     }
 
-    g->failure_label = new_label(g);
+    int label = new_label(g);
+    g->failure_label = label;
     g->label_used = 0;
     str_clear(g->failure_str);
 
@@ -488,6 +476,7 @@ static void generate_try(struct generator * g, struct node * p) {
     }
 
     generate(g, p->left);
+
     if (g->label_used)
         wsetl(g, g->failure_label);
     g->unreachable = false;
@@ -514,7 +503,6 @@ static void generate_fail(struct generator * g, struct node * p) {
 }
 
 /* generate_test() also implements 'reverse' */
-
 static void generate_test(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
     if (K_needed(g, p->left)) {
@@ -544,17 +532,21 @@ static void generate_do(struct generator * g, struct node * p) {
     }
 
     write_comment(g, p);
-    if (savevar) write_savecursor(g, p, savevar);
+    if (savevar) {
+        write_savecursor(g, p, savevar);
+    }
 
     if (p->left->type == c_call) {
         /* Optimise do <call> */
         write_comment(g, p->left);
         writef(g, "~M~V();~N", p->left);
     } else {
-        g->failure_label = new_label(g);
+        int label = new_label(g);
+        g->failure_label = label;
         str_clear(g->failure_str);
 
         generate(g, p->left);
+
         if (g->label_used)
             wsetl(g, g->failure_label);
         g->unreachable = false;
@@ -590,7 +582,6 @@ static void generate_GO(struct generator * g, struct node * p, int style) {
     write_comment(g, p);
 
     int used = g->label_used;
-
     int a0 = g->failure_label;
     struct str * a1 = str_copy(g->failure_str);
 
@@ -605,7 +596,8 @@ static void generate_GO(struct generator * g, struct node * p, int style) {
         write_savecursor(g, p, savevar);
     }
 
-    g->failure_label = new_label(g);
+    int label = new_label(g);
+    g->failure_label = label;
     g->label_used = 0;
     str_clear(g->failure_str);
     generate(g, p->left);
@@ -619,6 +611,7 @@ static void generate_GO(struct generator * g, struct node * p, int style) {
         if (style == 1) write_restorecursor(g, p, savevar);
         w(g, "~MBreak;~N");
     }
+
     g->unreachable = false;
     if (g->label_used)
         wsetl(g, g->failure_label);
@@ -639,8 +632,8 @@ static void generate_GO(struct generator * g, struct node * p, int style) {
 }
 
 static void generate_loop(struct generator * g, struct node * p) {
-    struct str * loopvar = vars_newname(g);
     write_comment(g, p);
+    struct str * loopvar = vars_newname(g);
     g->B[0] = str_data(loopvar);
     write_declare(g, "~B0 : Integer", p);
     w(g, "~MFor ~B0 := ");
@@ -666,7 +659,8 @@ static void generate_repeat_or_atleast(struct generator * g, struct node * p, st
         write_savecursor(g, p, savevar);
     }
 
-    g->failure_label = new_label(g);
+    int label = new_label(g);
+    g->failure_label = label;
     g->label_used = 0;
     str_clear(g->failure_str);
     generate(g, p->left);
@@ -698,10 +692,10 @@ static void generate_repeat(struct generator * g, struct node * p) {
 }
 
 static void generate_atleast(struct generator * g, struct node * p) {
-    struct str * loopvar = vars_newname(g);
-
     write_comment(g, p);
+
     w(g, "~{");
+    struct str * loopvar = vars_newname(g);
     g->B[0] = str_data(loopvar);
     write_declare(g, "~B0 : Integer", p);
     w(g, "~M~B0 := ");
@@ -823,8 +817,8 @@ static void generate_address(struct generator * g, struct node * p) {
 }
 
 static void generate_insert(struct generator * g, struct node * p, int style) {
-    int keep_c = style == c_attach;
     write_comment(g, p);
+    int keep_c = style == c_attach;
     if (p->mode == m_backward) keep_c = !keep_c;
     if (keep_c) {
         w(g, "~{~MC := FCursor;~N");
@@ -837,9 +831,8 @@ static void generate_insert(struct generator * g, struct node * p, int style) {
 }
 
 static void generate_assignfrom(struct generator * g, struct node * p) {
-    int keep_c = p->mode == m_forward; /* like 'attach' */
-
     write_comment(g, p);
+    int keep_c = p->mode == m_forward; /* like 'attach' */
     if (keep_c) {
         writef(g, "~{~MC := FCursor;~N", p);
         g->temporary_used = true;
@@ -851,7 +844,9 @@ static void generate_assignfrom(struct generator * g, struct node * p) {
     }
     generate_address(g, p);
     writef(g, ");~N", p);
-    if (keep_c) w(g, "~MFCursor := c;~N~}");
+    if (keep_c) {
+        w(g, "~MFCursor := c;~N~}");
+    }
 }
 
 static void generate_slicefrom(struct generator * g, struct node * p) {
@@ -862,8 +857,9 @@ static void generate_slicefrom(struct generator * g, struct node * p) {
 }
 
 static void generate_setlimit(struct generator * g, struct node * p) {
-    struct str * varname = vars_newname(g);
     write_comment(g, p);
+    struct str * varname = vars_newname(g);
+
     if (p->left && p->left->type == c_tomark) {
         /* Special case for:
          *
@@ -875,6 +871,7 @@ static void generate_setlimit(struct generator * g, struct node * p) {
          */
         struct node * q = p->left;
         write_comment(g, q);
+
         g->S[0] = q->mode == m_forward ? ">" : "<";
         w(g, "~MIf (FCursor ~S0 "); generate_AE(g, q->AE); w(g, ") Then~N");
         write_block_start(g);
@@ -954,7 +951,8 @@ static void generate_dollar(struct generator * g, struct node * p) {
     int used = g->label_used;
     int a0 = g->failure_label;
     struct str * a1 = str_copy(g->failure_str);
-    g->failure_label = new_label(g);
+    int label = new_label(g);
+    g->failure_label = label;
     g->label_used = 0;
     str_clear(g->failure_str);
 
@@ -1133,8 +1131,8 @@ static void generate_define(struct generator * g, struct node * p) {
     writef(g, "~MFunction T~n.~W : Boolean;~N", p);
 
     /* Save output. */
-    struct str *saved_output = g->outbuf;
-    struct str *saved_declarations = g->declarations;
+    struct str * saved_output = g->outbuf;
+    struct str * saved_declarations = g->declarations;
     g->outbuf = str_new();
     g->declarations = str_new();
 
@@ -1147,18 +1145,25 @@ static void generate_define(struct generator * g, struct node * p) {
 
     /* Generate function body. */
     w(g, "~{");
-    int signals = p->left->possible_signals;
     g->temporary_used = false;
     generate(g, p->left);
     if (p->left->right) {
         assert(p->left->right->type == c_functionend);
-        if (signals) {
+        if (p->left->possible_signals) {
             generate(g, p->left->right);
         }
     }
     w(g, "~}");
 
-    /* Declare local variables. */
+    if (q->amongvar_needed) {
+        str_append_string(g->declarations, "    AmongVar : Integer;\n");
+    }
+
+    if (g->temporary_used) {
+        str_append_string(g->declarations, "    C : Integer;\n");
+    }
+
+    /* Declare localised variables. */
     struct str * temp = g->outbuf;
     g->outbuf = g->declarations;
     for (struct name * name = g->analyser->names; name; name = name->next) {
@@ -1183,14 +1188,6 @@ static void generate_define(struct generator * g, struct node * p) {
         }
     }
     g->outbuf = temp;
-
-    if (g->temporary_used) {
-        str_append_string(g->declarations, "    C : Integer;\n");
-    }
-
-    if (q->amongvar_needed) {
-        str_append_string(g->declarations, "    AmongVar : Integer;\n");
-    }
 
     if (str_len(g->declarations) > 0) {
         str_append_string(saved_output, "Var\n");
@@ -1536,19 +1533,17 @@ static void generate_constructor(struct generator * g) {
 }
 
 static void generate_methods(struct generator * g) {
-    struct node * p = g->analyser->program;
-    while (p != NULL) {
+    for (struct node * p = g->analyser->program; p; p = p->right) {
         generate(g, p);
         g->unreachable = false;
-        p = p->right;
     }
 }
 
-static void set_bit(symbol * b, int i) { b[i/8] |= 1 << i%8; }
+static void set_bit(symbol * b, int i) { b[i >> 3] |= 1 << (i & 7); }
 
 static void generate_grouping_table(struct generator * g, struct grouping * q) {
     int range = q->largest_ch - q->smallest_ch + 1;
-    int size = (range + 7)/ 8;  /* assume 8 bits per symbol */
+    int size = (range + 7) / 8;  /* assume 8 bits per symbol */
     symbol * b = q->b;
     symbol * map = create_b(size);
 

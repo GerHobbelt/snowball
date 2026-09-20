@@ -1,32 +1,23 @@
 #include <assert.h>
+#include <stdio.h> /* for fprintf etc */
 #include <stdlib.h> /* for exit */
 #include <string.h> /* for strlen */
-#include <stdio.h> /* for fprintf etc */
 #include "header.h"
 
-/* prototypes */
+/* prototype functions for recursive use: */
 
 static void generate(struct generator * g, struct node * p);
 static void w(struct generator * g, const char * s);
 static void writef(struct generator * g, const char * s, struct node * p);
 
-static int new_label(struct generator * g) {
-    return g->next_label++;
-}
-
-static struct str * vars_newname(struct generator * g) {
-    struct str * output;
-    g->var_number++;
-    output = str_new();
-    str_append_string(output, "$v_");
-    str_append_int(output, g->var_number);
-    return output;
-}
-
 /* Write routines for items from the syntax tree */
 
 static void write_varname(struct generator * g, struct name * p) {
-    if (p->type != t_external) {
+    if (p->type == t_external) {
+        if (g->options->externals_prefix) {
+            write_string(g, g->options->externals_prefix);
+        }
+    } else {
         // We use the same naming scheme for both global and local variables.
         write_char(g, "SBIrxG"[p->type]);
         write_char(g, '_');
@@ -34,6 +25,7 @@ static void write_varname(struct generator * g, struct name * p) {
     write_s(g, p->s);
 }
 
+/* Reference to variable, e.g. when assigning to or using in an expression. */
 static void write_varref(struct generator * g, struct name * p) {
     if (p->type == t_grouping) {
         write_string(g, "self::");
@@ -74,10 +66,6 @@ static void write_literal_char(struct generator * g, symbol ch) {
         write_string(g, "}");
     }
     write_char(g, '"');
-}
-
-static void write_margin(struct generator * g) {
-    for (int i = 0; i < g->margin; i++) write_string(g, "    ");
 }
 
 static void write_relop(struct generator * g, int relop) {
@@ -188,7 +176,6 @@ static void write_check_limit(struct generator * g, struct node * p) {
 
 /* Formatted write. */
 static void writef(struct generator * g, const char * input, struct node * p) {
-    (void)p;
     int i = 0;
 
     while (input[i]) {
@@ -265,49 +252,60 @@ static void generate_AE(struct generator * g, struct node * p) {
     const char * s;
     switch (p->type) {
         case c_name:
-            write_varref(g, p->name); break;
+            write_varref(g, p->name);
+            break;
         case c_number:
-            write_int(g, p->number); break;
+            write_int(g, p->number);
+            break;
         case c_maxint:
-            write_string(g, "PHP_INT_MAX"); break;
+            write_string(g, "PHP_INT_MAX");
+            break;
         case c_minint:
-            write_string(g, "PHP_INT_MIN"); break;
+            write_string(g, "PHP_INT_MIN");
+            break;
         case c_neg:
-            write_char(g, '-'); generate_AE(g, p->right); break;
+            write_char(g, '-');
+            generate_AE(g, p->right);
+            break;
         case c_multiply:
-            s = " * "; goto label0;
-        case c_plus:
-            s = " + "; goto label0;
-        case c_minus:
-            s = " - ";
-        label0:
-            write_char(g, '('); generate_AE(g, p->left);
-            write_string(g, s); generate_AE(g, p->right); write_char(g, ')'); break;
+            s = " * ";
+            goto label0;
         case c_divide:
             /* Snowball specifies integer division with semantics matching C,
              * so we need to use `intdiv($x, $y)` here.
              */
-            write_string(g, "intdiv(");
+            write_string(g, "intdiv");
+            s = ", ";
+            goto label0;
+        case c_plus:
+            s = " + ";
+            goto label0;
+        case c_minus:
+            s = " - ";
+        label0:
+            write_char(g, '(');
             generate_AE(g, p->left);
-            write_string(g, ", ");
+            write_string(g, s);
             generate_AE(g, p->right);
             write_char(g, ')');
             break;
         case c_cursor:
-            w(g, "$this->cursor"); break;
-        case c_limit:
-            w(g, p->mode == m_forward ? "$this->limit" : "$this->limit_backward"); break;
-        case c_lenof:
-            writef(g, "mb_strlen(~V, 'UTF-8')", p);
+            w(g, "$this->cursor");
             break;
-        case c_sizeof:
-            writef(g, "strlen(~V)", p);
+        case c_limit:
+            w(g, p->mode == m_forward ? "$this->limit" : "$this->limit_backward");
             break;
         case c_len:
             w(g, "mb_strlen($this->current, 'UTF-8')");
             break;
         case c_size:
             w(g, "strlen($this->current)");
+            break;
+        case c_lenof:
+            writef(g, "mb_strlen(~V, 'UTF-8')", p);
+            break;
+        case c_sizeof:
+            writef(g, "strlen(~V)", p);
             break;
     }
 }
@@ -329,7 +327,9 @@ static void generate_and(struct generator * g, struct node * p) {
 
     write_comment(g, p);
 
-    if (savevar) write_savecursor(g, p, savevar);
+    if (savevar) {
+        write_savecursor(g, p, savevar);
+    }
 
     p = p->left;
     while (p) {
@@ -359,7 +359,9 @@ static void generate_or(struct generator * g, struct node * p) {
 
     write_comment(g, p);
 
-    if (savevar) write_savecursor(g, p, savevar);
+    if (savevar) {
+        write_savecursor(g, p, savevar);
+    }
 
     p = p->left;
     str_clear(g->failure_str);
@@ -371,7 +373,8 @@ static void generate_or(struct generator * g, struct node * p) {
         exit(1);
     }
     while (p->right != NULL) {
-        g->failure_label = new_label(g);
+        int label = new_label(g);
+        g->failure_label = label;
         g->label_used = 0;
         generate(g, p);
         if (!g->unreachable) {
@@ -383,7 +386,9 @@ static void generate_or(struct generator * g, struct node * p) {
         if (g->label_used)
             wsetl(g, g->failure_label);
         g->unreachable = false;
-        if (savevar) write_restorecursor(g, p, savevar);
+        if (savevar) {
+            write_restorecursor(g, p, savevar);
+        }
         p = p->right;
     }
 
@@ -413,7 +418,6 @@ static void generate_backwards(struct generator * g, struct node * p) {
     generate(g, p->left);
     w(g, "~M$this->cursor = $this->limit_backward;~N");
 }
-
 
 static void generate_not(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
@@ -452,14 +456,14 @@ static void generate_not(struct generator * g, struct node * p) {
     }
 }
 
-
 static void generate_try(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
     if (K_needed(g, p->left)) {
         savevar = vars_newname(g);
     }
 
-    g->failure_label = new_label(g);
+    int label = new_label(g);
+    g->failure_label = label;
     g->label_used = 0;
     str_clear(g->failure_str);
 
@@ -496,7 +500,6 @@ static void generate_fail(struct generator * g, struct node * p) {
 }
 
 /* generate_test() also implements 'reverse' */
-
 static void generate_test(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
     if (K_needed(g, p->left)) {
@@ -526,14 +529,17 @@ static void generate_do(struct generator * g, struct node * p) {
     }
 
     write_comment(g, p);
-    if (savevar) write_savecursor(g, p, savevar);
+    if (savevar) {
+        write_savecursor(g, p, savevar);
+    }
 
     if (p->left->type == c_call) {
         /* Optimise do <call> */
         write_comment(g, p->left);
         writef(g, "~M~V();~N", p->left);
     } else {
-        g->failure_label = new_label(g);
+        int label = new_label(g);
+        g->failure_label = label;
         str_clear(g->failure_str);
 
         generate(g, p->left);
@@ -586,7 +592,8 @@ static void generate_GO(struct generator * g, struct node * p, int style) {
         write_savecursor(g, p, savevar);
     }
 
-    g->failure_label = new_label(g);
+    int label = new_label(g);
+    g->failure_label = label;
     g->label_used = 0;
     str_clear(g->failure_str);
     generate(g, p->left);
@@ -620,8 +627,8 @@ static void generate_GO(struct generator * g, struct node * p, int style) {
 }
 
 static void generate_loop(struct generator * g, struct node * p) {
-    struct str * loopvar = vars_newname(g);
     write_comment(g, p);
+    struct str * loopvar = vars_newname(g);
     g->B[0] = str_data(loopvar);
     w(g, "~Mfor (~B0 = ");
     generate_AE(g, p->AE);
@@ -644,7 +651,8 @@ static void generate_repeat_or_atleast(struct generator * g, struct node * p, st
         write_savecursor(g, p, savevar);
     }
 
-    g->failure_label = new_label(g);
+    int label = new_label(g);
+    g->failure_label = label;
     g->label_used = 0;
     str_clear(g->failure_str);
     generate(g, p->left);
@@ -657,6 +665,7 @@ static void generate_repeat_or_atleast(struct generator * g, struct node * p, st
 
         w(g, "~Mcontinue;~N");
     }
+
     if (g->label_used)
         wsetl(g, g->failure_label);
     g->unreachable = false;
@@ -675,9 +684,9 @@ static void generate_repeat(struct generator * g, struct node * p) {
 }
 
 static void generate_atleast(struct generator * g, struct node * p) {
-    struct str * loopvar = vars_newname(g);
-
     write_comment(g, p);
+
+    struct str * loopvar = vars_newname(g);
     g->B[0] = str_data(loopvar);
     w(g, "~M~B0 = ");
     generate_AE(g, p->AE);
@@ -798,9 +807,8 @@ static void generate_address(struct generator * g, struct node * p) {
 }
 
 static void generate_insert(struct generator * g, struct node * p, int style) {
-
-    int keep_c = style == c_attach;
     write_comment(g, p);
+    int keep_c = style == c_attach;
     if (p->mode == m_backward) keep_c = !keep_c;
     if (keep_c) {
         w(g, "~M$c = $this->cursor;~N");
@@ -814,10 +822,8 @@ static void generate_insert(struct generator * g, struct node * p, int style) {
 }
 
 static void generate_assignfrom(struct generator * g, struct node * p) {
-
-    int keep_c = p->mode == m_forward; /* like 'attach' */
-
     write_comment(g, p);
+    int keep_c = p->mode == m_forward; /* like 'attach' */
     if (keep_c) {
         w(g, "~M$c = $this->cursor;~N");
         if (p->mode == m_forward) {
@@ -834,7 +840,9 @@ static void generate_assignfrom(struct generator * g, struct node * p) {
     }
     generate_address(g, p);
     writef(g, ");~N", p);
-    if (keep_c) w(g, "~M$this->cursor = $c;~N");
+    if (keep_c) {
+        w(g, "~M$this->cursor = $c;~N");
+    }
 }
 
 static void generate_slicefrom(struct generator * g, struct node * p) {
@@ -845,8 +853,9 @@ static void generate_slicefrom(struct generator * g, struct node * p) {
 }
 
 static void generate_setlimit(struct generator * g, struct node * p) {
-    struct str * varname = vars_newname(g);
     write_comment(g, p);
+    struct str * varname = vars_newname(g);
+
     if (p->left && p->left->type == c_tomark) {
         /* Special case for:
          *
@@ -858,6 +867,7 @@ static void generate_setlimit(struct generator * g, struct node * p) {
          */
         struct node * q = p->left;
         write_comment(g, q);
+
         g->S[0] = q->mode == m_forward ? ">" : "<";
         w(g, "~Mif ($this->cursor ~S0 "); generate_AE(g, q->AE); w(g, ") {~+~N");
         write_failure(g);
@@ -935,7 +945,8 @@ static void generate_dollar(struct generator * g, struct node * p) {
     int used = g->label_used;
     int a0 = g->failure_label;
     struct str * a1 = str_copy(g->failure_str);
-    g->failure_label = new_label(g);
+    int label = new_label(g);
+    g->failure_label = label;
     g->label_used = 0;
     str_clear(g->failure_str);
 
@@ -1116,13 +1127,12 @@ static void generate_define(struct generator * g, struct node * p) {
     g->failure_label = x_return;
     g->unreachable = false;
     g->keep_count = 0;
-    int signals = p->left->possible_signals;
 
     /* Generate function body. */
     generate(g, p->left);
     if (p->left->right) {
         assert(p->left->right->type == c_functionend);
-        if (signals) {
+        if (p->left->possible_signals) {
             generate(g, p->left->right);
         }
     }
@@ -1361,7 +1371,7 @@ static void generate_grouping_table(struct generator * g, struct grouping * q) {
     write_varname(g, q->name);
     write_string(g, " = [");
     for (int i = 0; i < SIZE(b); i++) {
-        if (i > 0) w(g, ", ");
+        if (i) w(g, ", ");
         write_literal_char(g, b[i]);
         w(g, "=>true");
     }
@@ -1411,6 +1421,7 @@ static void generate_methods(struct generator * g) {
 }
 
 extern void generate_program_php(struct generator * g) {
+    g->varname_prefix = "$v_";
 
     g->outbuf = str_new();
     g->failure_str = str_new();
