@@ -37,9 +37,16 @@ c_src_dir = src_c
 ifeq '$(filter %cl,$(CC))' ''
 o_for_obj = -o
 o_for_exe = -o
+ARFLAGS_ = $(ARFLAGS) # Includes a trailing space.
 else
 o_for_obj = -Fo:
 o_for_exe = -Fe:
+AR = lib -nologo
+# Frustratingly, LIB.EXE's `-out:` option doesn't allow a space to follow
+# (unlike CL.EXE's `-Fo:` and `-Fe:` options) so ARFLAGS_ has to be used
+# without a space after it.  For more sensible compilers ARFLAGS_ is set
+# to include a trailing space.
+ARFLAGS_ = -out:
 endif
 
 # C++
@@ -47,6 +54,13 @@ endif
 CXX ?= c++
 CXXFLAGS=-g -O2 -W -Wall -Wcast-qual -Wmissing-declarations -Wshadow $(WERROR)
 cxx_src_dir = cxx
+
+ifdef SNOWBALL_WIDE
+CXXFLAGS += -DSNOWBALL_WIDE
+cxx_encoding_opt := -w
+else
+cxx_encoding_opt := -u
+endif
 
 # C#
 
@@ -189,7 +203,7 @@ COMPILER_HEADERS = compiler/header.h \
 # C
 
 RUNTIME_SOURCES  = runtime/api.c \
-		   runtime/utilities.c
+		   runtime/snowball_runtime.c
 
 RUNTIME_HEADERS  = runtime/api.h \
 		   runtime/snowball_runtime.h
@@ -205,7 +219,7 @@ STEMTEST_SOURCES = tests/stemtest.c
 # C++
 
 CXX_STEMWORDS_SOURCES = $(cxx_src_dir)/stemwords.cxx
-CXX_RUNTIME_SOURCES = $(cxx_src_dir)/stemmer.cxx $(cxx_src_dir)/utilities.cxx
+CXX_RUNTIME_SOURCES = $(cxx_src_dir)/stemmer.cxx $(cxx_src_dir)/snowball_runtime.cxx
 CXX_SOURCES = $(libstemmer_algorithms:%=$(cxx_src_dir)/%_stemmer.cxx)
 CXX_HEADERS = $(libstemmer_algorithms:%=$(cxx_src_dir)/%_stemmer.h)
 
@@ -431,7 +445,7 @@ libstemmer/modules_utf8.h libstemmer/mkinc_utf8.mak: libstemmer/mkmodules.pl $(M
 libstemmer/libstemmer.o: libstemmer/modules.h $(C_LIB_HEADERS)
 
 libstemmer.a: libstemmer/libstemmer.o $(RUNTIME_OBJECTS) $(C_LIB_OBJECTS)
-	$(AR) $(ARFLAGS) $@ $^
+	$(AR) $(ARFLAGS_)$@ $^
 
 examples/%.o: examples/%.c
 	$(CC) $(CFLAGS) $(INCLUDES) $(CPPFLAGS) -c $(o_for_obj) $@ $<
@@ -474,7 +488,7 @@ $(cxx_src_dir)/stemwords$(EXEEXT): $(CXX_STEMWORDS_OBJECTS) $(CXX_RUNTIME_OBJECT
 
 $(cxx_src_dir)/%_stemmer.cxx $(cxx_src_dir)/%_stemmer.h: $(ALGORITHMS)/%.sbl snowball$(EXEEXT)
 	@mkdir -p $(cxx_src_dir)
-	$(SNOWBALL_COMPILE) -c++ -cheader '"stemmer.h"' $< -o $@ -r ../runtime -u
+	$(SNOWBALL_COMPILE) -c++ -cheader '"stemmer.h"' $< -o $@ -r ../runtime $(cxx_encoding_opt)
 
 $(cxx_src_dir)/%stemmer.o: $(cxx_src_dir)/%stemmer.h
 
@@ -483,6 +497,8 @@ $(cxx_src_dir)/%.o: $(cxx_src_dir)/%.cxx
 
 $(cxx_src_dir)/stemmer.cxx: GNUmakefile $(cxx_src_dir)/generate_algorithms.pl $(MODULES)
 	$(cxx_src_dir)/generate_algorithms.pl $@ $(MODULES)
+
+$(cxx_src_dir)/snowball_runtime.cxx: runtime/snowball_runtime.c
 
 # C#
 

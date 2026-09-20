@@ -65,6 +65,17 @@ static void write_varname(struct generator * g, struct name * p) {
         write_char(g, '_');
     }
 
+    for (int i = SIZE(p->s) - 1; i > 0; --i) {
+        if (p->s[i] == '_' && p->s[i - 1] == '_') {
+            // Ada doesn't allow identifiers containing a double underscore
+            // so generate an identifier based on the number instead.
+            // A Snowball name must start with a letter so this can't
+            // collide.
+            write_int(g, p->count);
+            return;
+        }
+    }
+
     {
         char save_initial = p->s[0];
         p->s[0] = toupper(save_initial);
@@ -1170,7 +1181,7 @@ static void generate_define(struct generator * g, struct node * p) {
     writef(g, "~Mprocedure ~W (Z : in out Context_Type; Result : out Boolean) is~N", p);
 
     /* Save output. */
-    struct str * saved_output = g->outbuf;
+    struct str * saved_outbuf = g->outbuf;
     struct str * saved_declarations = g->declarations;
     g->outbuf = str_new();
     g->declarations = str_new();
@@ -1204,17 +1215,20 @@ static void generate_define(struct generator * g, struct node * p) {
 
     writef(g, "~-~Mend ~W;~N", p);
 
+    struct str * temp = g->outbuf;
+    g->outbuf = saved_outbuf;
+
+    g->margin++;
+
     if (p->name->has_among) {
-        str_append_string(saved_output, "      A : Integer;\n");
+        w(g, "~MA : Integer;~N");
     }
 
     if (g->temporary_used) {
-        str_append_string(saved_output, "      C : Result_Index;\n");
+        w(g, "~MC : Result_Index;~N");
     }
 
     /* Declare localised variables. */
-    struct str * temp = g->outbuf;
-    g->outbuf = saved_output;
     for (struct name * name = g->analyser->names; name; name = name->next) {
         if (name->local_to == p->name) {
             switch (name->type) {
@@ -1222,29 +1236,32 @@ static void generate_define(struct generator * g, struct node * p) {
                     assert(0);
                     break;
                 case t_integer:
-                    w(g,  "      ");
+                    write_margin(g);
                     write_varname(g, name);
-                    w(g,  " : Integer;\n");
+                    w(g, " : Integer;~N");
                     break;
                 case t_boolean:
-                    w(g,  "      ");
+                    write_margin(g);
                     write_varname(g, name);
-                    w(g,  " : Boolean;\n");
+                    w(g,  " : Boolean;~N");
                     break;
             }
         }
     }
+
+    g->margin--;
+
     g->outbuf = temp;
 
     if (g->var_number) {
-        str_append(saved_output, g->declarations);
+        str_append(saved_outbuf, g->declarations);
     }
 
-    str_append(saved_output, g->outbuf);
+    str_append(saved_outbuf, g->outbuf);
     str_delete(g->declarations);
     str_delete(g->outbuf);
     g->declarations = saved_declarations;
-    g->outbuf = saved_output;
+    g->outbuf = saved_outbuf;
 }
 
 static void generate_functionend(struct generator * g, struct node * p) {
@@ -1675,13 +1692,13 @@ static int generate_among_table(struct generator * g, struct among * x, int star
 static void generate_amongs(struct generator * g) {
     if (!g->analyser->amongs) return;
 
-    struct str * s = g->outbuf;
+    struct str * saved_outbuf = g->outbuf;
     g->outbuf = g->declarations;
 
     w(g, "~N~MAmong_String : constant String := ~+");
     int count = 0;
     for (struct among * x = g->analyser->amongs; x != NULL; x = x->next) {
-        if (x->used) {
+        if (x->used && !x->duplicate) {
             count = generate_among_string(g, x, count);
         }
     }
@@ -1690,11 +1707,11 @@ static void generate_amongs(struct generator * g) {
     int operation = 0;
     int start_pos = 1;
     for (struct among * x = g->analyser->amongs; x != NULL; x = x->next) {
-        if (x->used) {
+        if (x->used && !x->duplicate) {
             start_pos = generate_among_table(g, x, start_pos, &operation);
         }
     }
-    g->outbuf = s;
+    g->outbuf = saved_outbuf;
 
     if (operation == 0) return;
 
@@ -1762,12 +1779,12 @@ static void generate_grouping_table(struct generator * g, struct grouping * q) {
 }
 
 static void generate_groupings(struct generator * g) {
-    struct str * s = g->outbuf;
+    struct str * saved_outbuf = g->outbuf;
     g->outbuf = g->declarations;
     for (struct grouping * q = g->analyser->groupings; q; q = q->next) {
         generate_grouping_table(g, q);
     }
-    g->outbuf = s;
+    g->outbuf = saved_outbuf;
 }
 
 extern void generate_program_ada(struct generator * g) {

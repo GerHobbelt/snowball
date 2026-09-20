@@ -48,6 +48,10 @@ jobs:
         - name: "C++"
           CXX: g++
           WERROR: '-pedantic -Werror'
+        - name: "C++ widechars"
+          CXX: g++
+          MAKE: 'make SNOWBALL_WIDE=1'
+          WERROR: '-pedantic -Werror'
         - name: java
           JAVA: java
           JAVAC: javac
@@ -112,6 +116,11 @@ jobs:
           os: 'ubuntu-24.04'
           apt_packages: 'python3.12'
           THIN_FACTOR: 1
+        - name: Python 3.14
+          PYTHON: python3.14
+          os: 'ubuntu-26.04'
+          apt_packages: 'python3.14'
+          THIN_FACTOR: 1
         - name: Python (pypy3)
           PYTHON: pypy3
           apt_packages: 'pypy3'
@@ -130,6 +139,13 @@ jobs:
           ccache: sccache
         - name: Windows MSVC (C)
           os: windows-latest
+          c_tests: check
+          ccache: sccache
+          CC: cl
+          CFLAGS: -nologo -std:c11 -W3 -WX
+        - name: Windows MSVC2026 arm (C)
+          os: windows-11-vs2026-arm
+          msvc_arch: arm64
           c_tests: check
           ccache: sccache
           CC: cl
@@ -198,7 +214,7 @@ jobs:
       if: ${{ endsWith(matrix.CC, 'cl') }}
       uses: egor-tensin/vs-shell@v2
       with:
-        arch: x64
+        arch: ${{ matrix.msvc_arch || 'x64' }}
     - name: Hook up runtime testing
       if: ${{ inputs.runtime-tests }}
       run: |
@@ -288,7 +304,7 @@ jobs:
       if: ${{ startsWith(matrix.JSRUN, 'deno') }}
       run: |
         deno lint javascript/*.js js_out/*.js
-        deno check javascript/*.js js_out/*.js
+        deno check --check-js javascript/*.js js_out/*.js
     - name: Test Rust
       if: matrix.RUST
       run: $MAKE check_rust RUST="${{ matrix.RUST }}"

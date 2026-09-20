@@ -124,7 +124,7 @@ EOS
     my $enc_array_len = 0;
     my $neednl = 0;
     for $enc (sort keys %encs) {
-	length($enc) > $enc_array_len and $enc_array_len = length($enc);
+        length($enc) > $enc_array_len and $enc_array_len = length($enc);
         print OUT ",\n" if $neednl;
         print OUT "  ENC_${enc}";
         $neednl = 1;
@@ -233,7 +233,7 @@ EOS
 
     $need_sep = 0;
     for $srcfile ('runtime/api.c',
-                  'runtime/utilities.c',
+                  'runtime/snowball_runtime.c',
                   "libstemmer/libstemmer${extn}.c") {
         print OUT " \\\n" if $need_sep;
         print OUT "  $srcfile";
