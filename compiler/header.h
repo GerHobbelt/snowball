@@ -132,7 +132,7 @@ enum token_codes {
     c_literalstring,
 
     /* These token values are synthesised by the analyser. */
-    c_mathassign,
+    c_stringassign,
     c_neg,
     c_call,
     c_grouping,
@@ -275,6 +275,7 @@ struct among {
     byte amongvar_needed;     /* do we need to set among_var? */
     byte always_matches;      /* will this among always match? */
     byte used;                /* is this among in reachable code? */
+    int same_action;          /* type code if same for all actions; <0 otherwise */
     int shortest_size;        /* smallest non-zero string length in this among */
     int longest_size;         /* longest string length in this among */
     struct node * substring;  /* i.e. substring ... among ( ... ) */
@@ -491,9 +492,11 @@ extern void write_start_comment(struct generator * g,
                                 const char * comment_start,
                                 const char * comment_end);
 
-extern int K_needed(struct generator * g, struct node * p);
-extern int K_needed_for_connective(struct generator * g, struct node * p);
-extern int repeat_restore(struct generator * g, struct node * p);
+extern int K_needed(struct node * p);
+extern int K_needed_node_on_f(struct node * p);
+extern int K_needed_for_and(struct node * p);
+extern int K_needed_for_or(struct node * p);
+extern int repeat_restore(struct node * p);
 
 extern int just_return_on_fail(struct generator * g);
 extern int tailcallable(struct generator * g, struct node * p);

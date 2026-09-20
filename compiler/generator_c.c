@@ -60,7 +60,8 @@ static void wlitch(struct generator * g, int ch) {
         write_char(g, ch);
         write_char(g, '\'');
     } else {
-        write_string(g, "0x"); write_hex(g, ch);
+        write_string(g, "0x");
+        write_hex(g, ch);
     }
 }
 
@@ -411,7 +412,7 @@ static void generate_bra(struct generator * g, struct node * p) {
 
 static void generate_and(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed_for_connective(g, p->left)) {
+    if (K_needed_for_and(p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -437,7 +438,7 @@ static void generate_and(struct generator * g, struct node * p) {
 
 static void generate_or(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed_for_connective(g, p->left)) {
+    if (K_needed_for_or(p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -470,7 +471,7 @@ static void generate_or(struct generator * g, struct node * p) {
 
         if (g->label_used)
             wsetl(g, g->failure_label);
-        if (savevar) {
+        if (savevar && K_needed_node_on_f(p)) {
             write_restorecursor(g, p, savevar);
         }
         p = p->right;
@@ -503,7 +504,7 @@ static void generate_backwards(struct generator * g, struct node * p) {
 
 static void generate_not(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed_node_on_f(p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -544,7 +545,7 @@ static void generate_not(struct generator * g, struct node * p) {
 
 static void generate_try(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed(p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -600,7 +601,7 @@ static void generate_fail(struct generator * g, struct node * p) {
 /* generate_test() also implements 'reverse' */
 static void generate_test(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed(p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -622,7 +623,7 @@ static void generate_test(struct generator * g, struct node * p) {
 
 static void generate_do(struct generator * g, struct node * p) {
     struct str * savevar = NULL;
-    if (K_needed(g, p->left)) {
+    if (K_needed(p->left)) {
         savevar = vars_newname(g);
     }
 
@@ -700,7 +701,7 @@ static void generate_GO_grouping(struct generator * g, struct node * p, int is_g
     }
 }
 
-static void generate_GO(struct generator * g, struct node * p, int style) {
+static void generate_GO(struct generator * g, struct node * p, int is_goto) {
     write_comment(g, p);
 
     int used = g->label_used;
@@ -710,7 +711,7 @@ static void generate_GO(struct generator * g, struct node * p, int style) {
     w(g, "~Mwhile (1) {~N~+");
 
     struct str * savevar = NULL;
-    if (style == 1 || repeat_restore(g, p->left)) {
+    if (is_goto || repeat_restore(p->left)) {
         savevar = vars_newname(g);
         write_savecursor(g, p, savevar);
     }
@@ -722,7 +723,7 @@ static void generate_GO(struct generator * g, struct node * p, int style) {
     generate(g, p->left);
 
     /* include for goto; omit for gopast */
-    if (style == 1) write_restorecursor(g, p, savevar);
+    if (is_goto) write_restorecursor(g, p, savevar);
     w(g, "~Mbreak;~N");
 
     if (g->label_used)
@@ -758,7 +759,7 @@ static void generate_repeat_or_atleast(struct generator * g, struct node * p, st
     writef(g, "~Mwhile (1) {~+~N", p);
 
     struct str * savevar = NULL;
-    if (repeat_restore(g, p->left)) {
+    if (repeat_restore(p->left)) {
         savevar = vars_newname(g);
         write_savecursor(g, p, savevar);
     }
@@ -925,7 +926,7 @@ static void generate_insert(struct generator * g, struct node * p, int style) {
     write_propagating_error(g, "insert_~$(z, z->c, z->c, ~a)", keep_c, p);
 }
 
-static void generate_assignfrom(struct generator * g, struct node * p) {
+static void generate_stringassign(struct generator * g, struct node * p) {
     write_comment(g, p);
     if (p->mode == m_forward) {
         /* like 'attach' */
@@ -1530,13 +1531,13 @@ static void generate(struct generator * g, struct node * p) {
         case c_rightslice:    generate_rightslice(g, p); break;
         case c_assignto:      generate_assignto(g, p); break;
         case c_sliceto:       generate_sliceto(g, p); break;
-        case c_assign:        generate_assignfrom(g, p); break;
+        case c_stringassign:  generate_stringassign(g, p); break;
         case c_insert:
         case c_attach:        generate_insert(g, p, p->type); break;
         case c_slicefrom:     generate_slicefrom(g, p); break;
         case c_setlimit:      generate_setlimit(g, p); break;
         case c_dollar:        generate_dollar(g, p); break;
-        case c_mathassign:    generate_integer_assign(g, p, "="); break;
+        case c_assign:        generate_integer_assign(g, p, "="); break;
         case c_plusassign:    generate_integer_assign(g, p, "+="); break;
         case c_minusassign:   generate_integer_assign(g, p, "-="); break;
         case c_multiplyassign:generate_integer_assign(g, p, "*="); break;
@@ -1849,10 +1850,16 @@ static void generate_grouping_table(struct generator * g, struct grouping * q) {
         write_int(g, map[i]);
     }
     if (g->options->coverage) {
+        int grouping_number = q->name->count;
+        if (grouping_number > 255) grouping_number = 255;
+        w(g, ", ");
+        wlitch(g, grouping_number);
+
         char buf[1024];
         checked_snprintf(buf, sizeof(buf), "%s:%d: grouping %.*s",
                          g->analyser->tokeniser->file, q->line_number,
                          SIZE(q->name->s), q->name->s);
+
         for (const char * p = buf; *p; ++p) {
             w(g, ", ");
             wlitch(g, (int)*p);
