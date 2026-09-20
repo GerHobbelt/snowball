@@ -42,7 +42,7 @@ static void write_varref(struct generator * g, struct name * p) {
     write_varname(g, p);
 }
 
-static void write_literal_string(struct generator * g, symbol * p) {
+static void write_literal_string(struct generator * g, const symbol * p) {
     write_char(g, '"');
     for (int i = 0; i < SIZE(p); i++) {
         int ch = p[i];
@@ -208,22 +208,22 @@ static void writef(struct generator * g, const char * input, struct node * p) {
             }
             case 'F': { // Among function dispatcher.
                 struct among * x = p->among;
-                if (x->function_count == 0) {
+                if (x->unique_function_count == 0) {
                     continue;
                 }
 
                 w(g, ", ");
 
-                if (x->function_count == 1) {
+                if (x->unique_function_count == 1) {
                     // Only one different function used in this among.
-                    struct amongvec * v = x->b;
+                    struct amongvec * v = x->v;
                     for (int j = 0; j < x->literalstring_count; j++) {
                         if (v[j].function) {
                             write_varref(g, v[j].function);
                             goto continue_outer_loop;
                         }
                     }
-                    fprintf(stderr, "function_count == 1 but no among functions\n");
+                    fprintf(stderr, "unique_function_count == 1 but no among functions\n");
                     exit(1);
 continue_outer_loop:
                     continue;
@@ -1290,7 +1290,7 @@ static void generate_debug(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->I[0] = g->debug_count++;
     g->I[1] = p->line_number;
-    writef(g, "~Mthis.debug(~I0, ~I1);~N", p);
+    writef(g, "~Mthis.#debug(~I0, ~I1);~N", p);
 }
 
 static void generate(struct generator * g, struct node * p) {
@@ -1394,7 +1394,7 @@ static void generate_class_end(struct generator * g) {
 static void generate_among_table(struct generator * g, struct among * x) {
     write_comment(g, x->node);
 
-    struct amongvec * v = x->b;
+    struct amongvec * v = x->v;
 
     g->I[0] = x->number;
     w(g, "~Mconst a_~I0 = [~N~+");
@@ -1436,9 +1436,9 @@ static void generate_amongs(struct generator * g) {
 }
 
 static void generate_among_dispatcher(struct generator * g, struct among * x) {
-    if (x->function_count <= 1) return;
+    if (x->unique_function_count <= 1) return;
 
-    struct amongvec * v = x->b;
+    struct amongvec * v = x->v;
 
     write_comment(g, x->node);
 
@@ -1446,7 +1446,7 @@ static void generate_among_dispatcher(struct generator * g, struct among * x) {
     w(g, "~N~M/** @return {boolean} */~N");
     w(g, "~M#af_~I0() {~N~+");
     w(g, "~Mswitch (this.af) {~N~+");
-    for (int n = 1; n <= x->function_count; n++) {
+    for (int n = 1; n <= x->unique_function_count; n++) {
         w(g, "~Mcase ");
         write_int(g, n);
         w(g, ": return ");
@@ -1562,6 +1562,30 @@ extern void generate_program_js(struct generator * g) {
     generate_class_begin(g);
 
     generate_members(g);
+
+    if (g->analyser->debug_used) {
+       w(g, "~N"
+            "~M/**~N"
+            "~M/* @param {number} n~N"
+            "~M/* @param {number} line~N"
+            "~M */~N"
+            "~M#debug(n, line) {~N~+"
+            "~Mconst len = this.current.length;~N"
+            "~Mlet s = `${n<10?'  ':n<100?' ':''}${n} (line ${line<10?'   ':line<100?'  ':line<1000?' ':''}${line}): [${len}]'`;~N"
+            "~Mfor (let i = 0; i <= len; ++i) {~N~+"
+            "~Mif (this.limit_backward === i) s = s + '{';~N"
+            "~Mif (this.bra === i) s = s + '[';~N"
+            "~Mif (this.c === i) s = s + '|';~N"
+            "~Mif (this.ket === i) s = s + ']';~N"
+            "~Mif (this.limit === i) s = s + '}';~N"
+            "~Mif (i < len) {~N~+"
+            "~Mconst ch = this.current[i];~N"
+            "~Mif (ch === '\\0') s = s + '#'; else s = s + ch;~N~-"
+            "~M}~N~-"
+            "~M}~N"
+            "~Mconsole.log(s + \"'\");~N~-"
+            "~M}~N");
+    }
 
     generate_among_dispatchers(g);
 
