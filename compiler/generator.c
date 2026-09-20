@@ -51,7 +51,7 @@ static void write_comment_literalstring(struct generator * g, const symbol *s,
         // Check if the literal string contains the target language end comment
         // string.  Don't try to be clever here as real-world literal strings
         // are unlikely to contain even partial matches.
-        int end_len = strlen(end);
+        int end_len = (int)strlen(end);
         if (end_len <= SIZE(s)) {
             for (int i = 0; i <= SIZE(s) - end_len; ++i) {
                 for (int j = 0; j < end_len; ++j) {
@@ -394,7 +394,6 @@ static int K_needed_node_on_f_(struct node * p, int call_depth) {
             // Doesn't modify the cursor on failure.
             break;
 
-        case c_delete:
         case c_repeat:
         case c_slicefrom:
         case c_tolimit:
@@ -552,6 +551,16 @@ static int repeat_score(struct node * p, int call_depth) {
 /* tests if an expression requires cursor reinstatement in a repeat */
 extern int repeat_restore(struct node * p) {
     return repeat_score(p, 0) >= 2;
+}
+
+extern bool
+amongvar_needed(struct node * p)
+{
+    if (!p) return false;
+    if (p->among && p->among->amongvar_needed) return true;
+    return amongvar_needed(p->left) ||
+           amongvar_needed(p->right) ||
+           amongvar_needed(p->aux);
 }
 
 /* Language-independent write routines for simple entities */

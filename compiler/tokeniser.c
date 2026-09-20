@@ -27,14 +27,16 @@ extern byte * get_input(const char * filename) {
         size = 0;
         u = create_s(INITIAL_INPUT_BUFFER_SIZE);
         while (true) {
-            int s = CAPACITY(u) - size;
-            int r = fread(u + size, 1, s, input);
-            if (r < 0) {
-                fprintf(stderr, "%s: Read error\n", filename);
-                exit(1);
+            size_t s = CAPACITY(u) - size;
+            size_t r = fread(u + size, 1, s, input);
+            size += (int)r;
+            if (r < s) {
+                if (ferror(input)) {
+                    fprintf(stderr, "%s: Read error\n", filename);
+                    exit(1);
+                }
+                break;
             }
-            size += r;
-            if (r < s) break;
             u = increase_capacity_s(u, size);
         }
     }
@@ -546,7 +548,7 @@ extern int read_token(struct tokeniser * t) {
                     }
                 }
                 if (u == NULL) {
-                    error(t, "Can't get '", (byte *)file, strlen(file), "'");
+                    error(t, "Can't get '", (byte *)file, (int)strlen(file), "'");
                     exit(1);
                 }
                 memmove(q, t, sizeof(struct input));

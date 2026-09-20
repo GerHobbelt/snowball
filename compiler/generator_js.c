@@ -756,11 +756,6 @@ static void generate_hop(struct generator * g, struct node * p) {
     }
 }
 
-static void generate_delete(struct generator * g, struct node * p) {
-    write_comment(g, p);
-    writef(g, "~Mthis.slice_del();~N", p);
-}
-
 static void generate_tolimit(struct generator * g, struct node * p) {
     write_comment(g, p);
     if (p->mode == m_forward) {
@@ -848,9 +843,13 @@ static void generate_stringassign(struct generator * g, struct node * p) {
 
 static void generate_slicefrom(struct generator * g, struct node * p) {
     write_comment(g, p);
+    if (p->literalstring && SIZE(p->literalstring) == 0) {
+        w(g, "~Mthis.slice_del();~N");
+        return;
+    }
     w(g, "~Mthis.slice_from(");
     generate_address(g, p);
-    writef(g, ");~N", p);
+    w(g, ");~N");
 }
 
 static void generate_setlimit(struct generator * g, struct node * p) {
@@ -1125,7 +1124,7 @@ static void generate_define(struct generator * g, struct node * p) {
 
     struct name * q = p->name;
 
-    if (q->amongvar_needed) {
+    if (amongvar_needed(p->left)) {
         // The "among var" (`a`) is only assigned to, but the initialisation
         // can be generated in a nested block so it seems hard to declare it as
         // const and still have it visible when we want to use it.
@@ -1237,7 +1236,7 @@ static void generate_among(struct generator * g, struct node * p) {
     } else if (x->command_count > 0) {
         if (x->same_action == c_slicefrom && x->command_count > 1) {
             if (x->nocommand_count > 0) {
-                w(g, "~Mif (a > 0) {~N+");
+                w(g, "~Mif (a > 0) {~N~+");
             }
             write_comment(g, x->commands[0]);
             g->I[0] = x->number;
@@ -1326,7 +1325,6 @@ static void generate(struct generator * g, struct node * p) {
         case c_atleast:       generate_atleast(g, p); break;
         case c_tomark:        generate_tomark(g, p); break;
         case c_hop:           generate_hop(g, p); break;
-        case c_delete:        generate_delete(g, p); break;
         case c_next:          generate_next(g, p); break;
         case c_tolimit:       generate_tolimit(g, p); break;
         case c_leftslice:     generate_leftslice(g, p); break;

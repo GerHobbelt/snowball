@@ -3,7 +3,7 @@
 # include <stdbool.h>
 #endif
 
-#define SNOWBALL_VERSION "3.1.0"
+#define SNOWBALL_VERSION "3.1.1"
 
 typedef unsigned char byte;
 typedef unsigned short symbol;
@@ -227,11 +227,9 @@ struct name {
     bool value_used;            /* (For variables) is its value ever used? */
     bool initialised;           /* (For variables) is it ever initialised? */
     bool used_in_definition;    /* (grouping) used in grouping definition? */
-    bool amongvar_needed;       /* for routines, externals */
-    bool among_with_function;   /* (routines/externals) contains among with func */
     bool case_collision;        /* A name of the same type differs only by case */
     struct node * definition;   /* (routines/externals) c_define node */
-    int used_in_among;          /* (routines/externals) Count of uses in amongs */
+    int uses_in_among;          /* (routines/externals) Count of uses in amongs */
     // Initialised to -1; set to -2 if reachable from an external.
     // Reachable names are then numbered 0, 1, 2, ... with separate numbering
     // per type.
@@ -281,7 +279,6 @@ struct among {
     struct node * substring;  /* i.e. substring ... among ( ... ) */
     struct node ** commands;  /* array with command_count entries */
     struct node * node;       /* pointer to the node for this among */
-    struct name * in_routine; /* pointer to name for routine this among is in */
 };
 
 struct grouping {
@@ -497,6 +494,7 @@ extern int K_needed_node_on_f(struct node * p);
 extern int K_needed_for_and(struct node * p);
 extern int K_needed_for_or(struct node * p);
 extern int repeat_restore(struct node * p);
+extern bool amongvar_needed(struct node * p);
 
 extern int just_return_on_fail(struct generator * g);
 extern int tailcallable(struct generator * g, struct node * p);

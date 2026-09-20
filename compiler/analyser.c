@@ -325,14 +325,9 @@ static int binding(int t) {
 }
 
 static void mark_used_in(struct analyser * a, struct name * q, struct node * p) {
+    (void)a;
     if (!q->used) {
         q->used = p;
-        q->local_to = a->program_end->name;
-    } else if (q->local_to) {
-        if (q->local_to != a->program_end->name) {
-            /* Used in more than one routine/external. */
-            q->local_to = NULL;
-        }
     }
 }
 
@@ -757,7 +752,6 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
     x->node = p;
     x->b = v;
     x->shortest_size = INT_MAX;
-    x->in_routine = a->current_routine;
 
     if (q->type == c_bra) {
         fprintf(stderr,
@@ -782,7 +776,7 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
             if (q->left) {
                 struct name * function = q->left->name;
                 w1->function = function;
-                ++function->used_in_among;
+                ++function->uses_in_among;
                 check_routine_mode(a, function, direction);
                 if (function->among_index == 0) {
                     function->among_index = ++x->function_count;
@@ -886,7 +880,7 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
 
         for (w = w0 - 1; w >= v; w--) {
             if (w->size < size && memcmp(w->b, b, w->size * sizeof(symbol)) == 0) {
-                w0->i = w - v;  /* fill in index of longest substring */
+                w0->i = (int)(w - v);  /* fill in index of longest substring */
                 break;
             }
         }
@@ -1013,16 +1007,12 @@ static struct node * make_among(struct analyser * a, struct node * p, struct nod
             and_node->left->name = v[0].function;
             and_node->left->right = p;
             p = and_node;
-            --v[0].function->used_in_among;
+            --v[0].function->uses_in_among;
         }
         FREE(x->commands);
         FREE(x);
         FREE(v);
         return p;
-    }
-
-    if (x->function_count) {
-        if (a->current_routine) a->current_routine->among_with_function = true;
     }
 
     x->substring = substring;
@@ -1173,23 +1163,53 @@ static struct node * read_C(struct analyser * a) {
         }
         case c_not: {
             struct node * subcommand = read_C(a);
-            if (subcommand->type == c_booltest) {
-                /* We synthesise a special command for "not" applied to testing
-                 * a boolean variable.
-                 */
-                subcommand->type = c_not_booltest;
-                return subcommand;
+            switch (subcommand->type) {
+                case c_booltest:
+                    /* We synthesise a special command for "not" applied to
+                     * testing a boolean variable.
+                     */
+                    subcommand->type = c_not_booltest;
+                    return subcommand;
+                case c_next: {
+                    // `not next` -> compare `cursor` and `limit`.
+                    int mode = a->mode;
+                    struct node * n = new_node(a, mode == m_forward ? c_ge : c_le);
+                    n->left = subcommand;
+                    n->left->type = c_cursor;
+                    n->AE = new_node_at_line(a, c_limit, n->left->line_number);
+                    return n;
+                }
+                case c_eq:
+                case c_ge:
+                case c_gt:
+                case c_le:
+                case c_lt:
+                case c_ne:
+                    // Flip the sense of the test.
+                    subcommand->type ^= 1;
+                    return subcommand;
             }
             struct node * p = new_node(a, token);
             p->left = subcommand;
             return p;
         }
         case c_try:
-        case c_test:
         case c_do:
         case c_repeat: {
             struct node * p = new_node(a, token);
             p->left = read_C(a);
+            return p;
+        }
+        case c_test: {
+            struct node * p = new_node(a, token);
+            p->left = read_C(a);
+            if (p->left->type == c_next) {
+                // `test next` -> compare `cursor` and `limit`.
+                int mode = a->mode;
+                p->type = (mode == m_forward ? c_lt : c_gt);
+                p->left->type = c_cursor;
+                p->AE = new_node_at_line(a, c_limit, p->left->line_number);
+            }
             return p;
         }
         case c_fail: {
@@ -1346,9 +1366,17 @@ static struct node * read_C(struct analyser * a) {
             }
             return n;
         }
-        case c_delete:
+        case c_delete: {
             check_modifyable(a);
-            /* fall through */
+            // Canonicalise `delete` to `<-''`.
+            struct node * n = new_node(a, c_slicefrom);
+            NEW(literalstring, p);
+            p->b = create_b(0);
+            p->next = a->literalstrings;
+            a->literalstrings = p;
+            n->literalstring = p->b;
+            return n;
+        }
         case c_next:
         case c_tolimit:
         case c_leftslice:
@@ -1403,10 +1431,6 @@ static struct node * read_C(struct analyser * a) {
                     n->type = c_true;
                     n->literalstring = NULL;
                     break;
-                  case c_slicefrom:
-                    // Canonicalise `<-''` to `delete`.
-                    n->type = c_delete;
-                    n->literalstring = NULL;
                 }
             }
             return n;
@@ -1905,25 +1929,6 @@ static void read_define_routine(struct analyser * a, struct name * q) {
     get_token(a, c_as);
     p->left = read_C(a);
     if (q) q->definition = p;
-    /* We should get a node with a NULL right pointer from read_C() for the
-     * routine's code.  We synthesise a "functionend" node there so
-     * optimisations such as dead code elimination and tail call optimisation
-     * can easily see where the function ends.
-     */
-    assert(p->left->right == NULL);
-    if (p->left->type == c_bra) {
-        /* Put the "functionend" node at the end of the command list. */
-        struct node * e = p->left->left;
-        if (e) {
-            while (e->right) e = e->right;
-            e->right = new_node(a, c_functionend);
-        } else {
-            p->left = new_node(a, c_functionend);
-        }
-    } else {
-        /* Put the "functionend" node after the single command. */
-        p->left->right = new_node(a, c_functionend);
-    }
 
     if (a->substring != NULL) {
         substring_without_among_error(a);
@@ -1996,7 +2001,7 @@ static void read_program_(struct analyser * a, int terminator) {
                 break;
             case -1:
                 if (terminator != -1)
-		    omission_error(a, terminator);
+                    omission_error(a, terminator);
                 return;
         }
     }
@@ -2057,7 +2062,7 @@ enum {
  */
 static int always_set_before_use_(struct node * p, struct node * func,
                                   struct name * v) {
-    if (!p) return UNKNOWN;
+    assert(p);
     switch (p->type) {
         case c_call: {
             if (p->name->definition == func) {
@@ -2138,7 +2143,6 @@ static int always_set_before_use_(struct node * p, struct node * func,
             if (p->name == v)
                 return SET_BEFORE_ANY_USE;
             return UNKNOWN;
-        case c_delete:
         case c_grouping:
         case c_leftslice:
         case c_literalstring:
@@ -2177,7 +2181,11 @@ static int always_set_before_use_(struct node * p, struct node * func,
         case c_divide:
         case c_minus:
         case c_multiply:
-        case c_plus:
+        case c_plus: {
+            int r = always_set_before_use_(p->left, func, v);
+            if (r != UNKNOWN) return r;
+            return always_set_before_use_(p->right, func, v);
+        }
         case c_eq:
         case c_ne:
         case c_gt:
@@ -2186,7 +2194,7 @@ static int always_set_before_use_(struct node * p, struct node * func,
         case c_le: {
             int r = always_set_before_use_(p->left, func, v);
             if (r != UNKNOWN) return r;
-            return always_set_before_use_(p->right, func, v);
+            return always_set_before_use_(p->AE, func, v);
         }
         case c_neg:
             return always_set_before_use_(p->right, func, v);
@@ -2281,7 +2289,7 @@ static int always_set_before_use(struct node * p, struct node * func,
     return always_set_before_use_(p, func, v) != USE_BEFORE_SET;
 }
 
-static void remove_unreachable_routine(struct analyser * a, struct name * q) {
+static void remove_routine(struct analyser * a, struct name * q) {
     struct node ** ptr = &(a->program);
     while (*ptr) {
         if ((*ptr)->name == q) {
@@ -2304,7 +2312,6 @@ static int check_possible_signals(struct analyser * a, struct node * p) {
         case c_stringassign:
         case c_attach:
         case c_debug:
-        case c_delete:
         case c_do:
         case c_insert:
         case c_leftslice:
@@ -2526,14 +2533,22 @@ static int check_possible_signals(struct analyser * a, struct node * p) {
 
 static void visit_routine(struct analyser * a, struct name * n);
 
-static void visit_node(struct analyser * a, struct node * p) {
+static void visit_node(struct analyser * a, struct node * p, struct name * func) {
     while (p) {
         if (p->name) {
-            if (p->type == c_call) {
-                visit_routine(a, p->name);
-            } else {
-                // Mark as reachable.
-                p->name->count = -2;
+            if (p->name->count != -2) {
+                // First use of this name that visit_node() has seen.
+                p->name->used = p;
+                p->name->local_to = func;
+                if (p->type == c_call) {
+                    visit_routine(a, p->name);
+                } else {
+                    // Mark as reachable.
+                    p->name->count = -2;
+                }
+            } else if (p->name->local_to != func) {
+                // Used in more than one routine/external.
+                p->name->local_to = NULL;
             }
         } else if (p->type == c_among) {
             struct among * x = p->among;
@@ -2543,17 +2558,17 @@ static void visit_node(struct analyser * a, struct node * p) {
                     visit_routine(a, x->b[i].function);
             }
             for (int i = 0; i < x->command_count; ++i) {
-                visit_node(a, x->commands[i]);
+                visit_node(a, x->commands[i], func);
             }
         }
         if (p->left) {
-            visit_node(a, p->left);
+            visit_node(a, p->left, func);
         }
         if (p->aux) {
-            visit_node(a, p->aux);
+            visit_node(a, p->aux, func);
         }
         if (p->AE) {
-            visit_node(a, p->AE);
+            visit_node(a, p->AE, func);
         }
 
         p->possible_signals = check_possible_signals(a, p);
@@ -2610,10 +2625,64 @@ static void visit_routine(struct analyser * a, struct name * n) {
     // will be used if a function calls itself (directly or indirectly).
     p->possible_signals = -1; // Assume it could signal t or f.
 
-    visit_node(a, p->left);
+    visit_node(a, p->left, n);
 
     // Update with calculated value.
     p->possible_signals = p->left->possible_signals;
+}
+
+static struct node * clone_node(struct analyser * a, struct node * n) {
+    if (n == NULL) return n;
+
+    NEW(node, p);
+    p->among = n->among;
+    p->type = n->type;
+    p->mode = n->mode;
+    p->fixed_constant = n->fixed_constant;
+    p->possible_signals = n->possible_signals;
+    p->name = n->name;
+    p->literalstring = n->literalstring;
+    p->number = n->number;
+    p->line_number = n->line_number;
+
+    p->left = clone_node(a, n->left);
+    p->aux = clone_node(a, n->aux);
+    p->right = clone_node(a, n->right);
+    p->AE = clone_node(a, n->AE);
+
+    p->next = a->nodes;
+    a->nodes = p;
+    return p;
+}
+
+// Inline any calls to routine `n` in the code starting at `p`.
+// Returns true if there are no remaining calls to `n` anywhere in the program.
+static bool inline_calls(struct analyser * a,
+                         struct node * p,
+                         struct name * n) {
+    while (p) {
+        if (p->name == n && p->type == c_call) {
+            p->type = c_bra;
+            p->name = NULL;
+            --n->references;
+            if (n->references < 2) {
+                // No more uses of n, so there is no need to clone the code.
+                // We return true so if we're nested our parent knows to stop
+                // looking for calls to n, and to indicate the entry for n in
+                // analyser->names should be removed.
+                p->left = n->definition->left;
+                n->definition = NULL;
+                return true;
+            }
+            p->left = clone_node(a, n->definition->left);
+            p = p->right;
+            continue;
+        }
+        if (inline_calls(a, p->left, n)) return true;
+        if (inline_calls(a, p->aux, n)) return true;
+        p = p->right;
+    }
+    return false;
 }
 
 extern void read_program(struct analyser * a, unsigned localise_mask) {
@@ -2645,6 +2714,129 @@ extern void read_program(struct analyser * a, unsigned localise_mask) {
     if (a->tokeniser->error_count)
         return;
 
+    for (struct name ** n_ptr = &(a->names); *n_ptr; ) {
+        struct name * n = *n_ptr;
+        // Inline calls to routines which are "simple".
+        //
+        // We should probably also inline any routine which is only called once
+        // but to do that we need to handle updating things like
+        // amongvar_needed (which hasn't been set at this point).
+        //
+        // Note: the definition of a routine is counted as a reference to its
+        // name, so a routine only called once has 2 references.
+        if (n->type == t_routine &&
+            n->references >= 2 &&
+            !n->definition->left->right) {
+            bool inline_routine = false;
+            switch (n->definition->left->type) {
+                case c_eq:
+                case c_ge:
+                case c_gt:
+                case c_le:
+                case c_lt:
+                case c_ne:
+                case c_booltest:
+                case c_not_booltest:
+                case c_grouping:
+                case c_non:
+                case c_goto_grouping:
+                case c_gopast_grouping:
+                case c_goto_non:
+                case c_gopast_non:
+                case c_literalstring:
+                case c_name:
+                case c_true:
+                case c_false:
+                case c_fail:
+                case c_set:
+                case c_unset:
+                case c_assign:
+                case c_plusassign:
+                case c_minusassign:
+                case c_multiplyassign:
+                case c_divideassign:
+                case c_tomark:
+                case c_tolimit:
+                case c_hop:
+                case c_next:
+                case c_insert:
+                case c_attach:
+                case c_leftslice:
+                case c_rightslice:
+                case c_sliceto:
+                case c_stringassign:
+                case c_slicefrom:
+                    // Inline "simple" single-command routines.
+                    inline_routine = true;
+                    break;
+            }
+
+            if (inline_routine) {
+#if 0
+                fprintf(stderr, "%s:%d: info: Inlining %.*s\n",
+                        a->tokeniser->file,
+                        n->used->line_number,
+                        SIZE(n->s), n->s);
+#endif
+                bool remove = false;
+                for (struct name * r = a->names; r; r = r->next) {
+                    // Only routines and externals.
+                    if (!r->definition) continue;
+                    // Don't try to inline a routine into itself!
+                    if (r == n) continue;
+                    if (inline_calls(a, r->definition->left, n)) {
+                        // All calls to routine `n` have now been inlined
+                        // so remove it and move on to the next candidate
+                        // for inlining.
+                        remove = true;
+                        break;
+                    }
+                }
+                if (remove) {
+                    remove_routine(a, n);
+                    *n_ptr = n->next;
+                    lose_s(n->s);
+                    FREE(n);
+                    continue;
+                }
+            }
+        }
+
+        n_ptr = &(n->next);
+    }
+
+    // Add "functionend" nodes there so optimisations such as dead code
+    // elimination and tail call optimisation can easily see where the function
+    // ends.
+    for (struct name * name = a->names; name; name = name->next) {
+        if (name->type != t_routine && name->type != t_external) continue;
+
+        struct node * p = name->definition;
+        if (!p) {
+            // No definition - we'll report this later.
+            continue;
+        }
+        assert(p->type == c_define);
+        assert(p->left);
+        assert(p->left->right == NULL);
+        if (p->left->type == c_bra) {
+            /* Put the "functionend" node at the end of the command list. */
+            struct node * e = p->left->left;
+            if (e) {
+                while (e->right) e = e->right;
+                e->right = new_node(a, c_functionend);
+            } else {
+                p->left = new_node(a, c_functionend);
+            }
+        } else {
+            /* Put the "functionend" node after the single command. */
+            p->left->right = new_node(a, c_functionend);
+        }
+    }
+
+    // Trace possible control flow starting from externals to discover any
+    // unreachable code.  This also fills in possible_signals for each
+    // reachable node.
     for (struct name * n = a->names; n; n = n->next) {
         if (n->type == t_external) {
             if (!n->used) {
@@ -2729,7 +2921,7 @@ extern void read_program(struct analyser * a, unsigned localise_mask) {
                         q->declaration_line_number,
                         name_of_type(q->type),
                         SIZE(q->s), q->s);
-                remove_unreachable_routine(a, q);
+                remove_routine(a, q);
             }
             q->used = NULL;
         }
@@ -2748,7 +2940,7 @@ extern void read_program(struct analyser * a, unsigned localise_mask) {
                 // the groupings list just below.
                 n->grouping->name = NULL;
             } else if (n->definition) {
-                remove_unreachable_routine(a, n);
+                remove_routine(a, n);
             }
             struct name * n_next = n->next;
             lose_s(n->s);
@@ -2840,8 +3032,6 @@ extern void read_program(struct analyser * a, unsigned localise_mask) {
                  * find_among*() returns zero or not.
                  */
                 x->amongvar_needed = true;
-                if (x->in_routine)
-                    x->in_routine->amongvar_needed = true;
             }
 
             a_ptr = &(x->next);

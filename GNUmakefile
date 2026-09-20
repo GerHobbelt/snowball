@@ -2,7 +2,7 @@
 
 # After changing this, run `make update_version` to update various sources
 # which hard-code it.
-SNOWBALL_VERSION = 3.1.0
+SNOWBALL_VERSION = 3.1.1
 
 ifeq ($(OS),Windows_NT)
 EXEEXT = .exe
@@ -34,6 +34,12 @@ ada_src_dir = $(ada_src_main_dir)/algorithms
 
 ARFLAGS = -cr
 c_src_dir = src_c
+
+# C++
+
+CXX ?= c++
+CXXFLAGS=-g -O2 -W -Wall -Wcast-qual -Wmissing-declarations -Wshadow $(WERROR)
+cxx_src_dir = cxx
 
 # C#
 
@@ -189,6 +195,17 @@ LIBSTEMMER_EXTRA = $(MODULES) libstemmer/libstemmer_c.in
 STEMWORDS_SOURCES = examples/stemwords.c
 STEMTEST_SOURCES = tests/stemtest.c
 
+# C++
+
+CXX_STEMWORDS_SOURCES = $(cxx_src_dir)/stemwords.cxx
+CXX_RUNTIME_SOURCES = $(cxx_src_dir)/stemmer.cxx $(cxx_src_dir)/utilities.cxx
+CXX_SOURCES = $(libstemmer_algorithms:%=$(cxx_src_dir)/%_stemmer.cxx)
+CXX_HEADERS = $(libstemmer_algorithms:%=$(cxx_src_dir)/%_stemmer.h)
+
+CXX_STEMWORDS_OBJECTS = $(CXX_STEMWORDS_SOURCES:.cxx=.o)
+CXX_RUNTIME_OBJECTS = $(patsubst %.c,%.o,$(patsubst %.cxx,%.o,$(CXX_RUNTIME_SOURCES)))
+CXX_OBJECTS = $(CXX_SOURCES:.cxx=.o)
+
 # C#
 
 CSHARP_RUNTIME_SOURCES = csharp/Snowball/Among.cs \
@@ -317,20 +334,22 @@ update_version:
 	perl -pi -e 's/(libstemmer_c-)\d+\.\d+.\d+/$${1}$(SNOWBALL_VERSION)/' README.rst
 
 # Generate and build for all target languages.
-everything: ada all csharp dart go java js pascal python rust zig
+everything: ada all cxx csharp dart go java js pascal python rust zig
 
 # Generate code for all languages.  Override build tools to do as little code
 # building as possible.
 generate: gprbuild=perl -e '$$ARGV[0] eq "-Pgenerate" and unshift @ARGV, "gprbuild" and exec @ARGV' --
-generate: mcs=:
+generate: CXX=:
+generate: MCS=:
 generate: DART=:
 generate: go=:
 generate: JAVAC=:
+generate: FPC=:
 generate: everything
 
 # The directories where generated code goes for all languages.
 ALL_CODE_DIRS := \
-	ada src_c csharp dart go java js_out pascal python_out rust zig
+	ada src_c cxx csharp dart go java js_out pascal python_out rust zig
 
 # When runtime tests are enabled, this gets overridden by overrides.mk.
 BASELINE ?= baseline
@@ -338,7 +357,7 @@ BASELINE ?= baseline
 baseline-create: generate
 	rm -rf *.$(BASELINE)
 	for d in $(ALL_CODE_DIRS) ; do cp -a $$d $$d.$(BASELINE) ; done
-	rm -rf *.$(BASELINE)/*.o ada.$(BASELINE)/obj pascal.$(BASELINE)/*.ppu
+	rm -rf *.$(BASELINE)/*.o ada.$(BASELINE)/obj pascal.$(BASELINE)/*.ppu *.$(BASELINE)/stemwords$(EXEEXT)
 	find java.$(BASELINE) -name '*.class' -delete
 
 baseline-diff:
@@ -437,6 +456,26 @@ $(c_src_dir)/stem_ISO_8859_2_%.c $(c_src_dir)/stem_ISO_8859_2_%.h: $(ALGORITHMS)
 
 $(c_src_dir)/stem_%.o: $(c_src_dir)/stem_%.c $(c_src_dir)/stem_%.h
 	$(CC) $(CFLAGS) $(INCLUDES) $(CPPFLAGS) -c -o $@ $<
+
+# C++
+
+$(cxx_src_dir)/factory.h: libstemmer/modules.txt
+	$(cxx_src_dir)/generate_factory.pl $< > $@
+
+$(cxx_src_dir)/stemwords$(EXEEXT): $(CXX_STEMWORDS_OBJECTS) $(CXX_RUNTIME_OBJECTS) $(CXX_OBJECTS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^
+
+$(cxx_src_dir)/%_stemmer.cxx $(cxx_src_dir)/%_stemmer.h: $(ALGORITHMS)/%.sbl snowball$(EXEEXT)
+	@mkdir -p $(cxx_src_dir)
+	$(SNOWBALL_COMPILE) -c++ -cheader '"stemmer.h"' $< -o $@ -r ../runtime -u
+
+$(cxx_src_dir)/%stemmer.o: $(cxx_src_dir)/%stemmer.h
+
+$(cxx_src_dir)/%.o: $(cxx_src_dir)/%.cxx
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(CPPFLAGS) -c -o $@ $<
+
+$(cxx_src_dir)/stemmer.cxx: GNUmakefile $(cxx_src_dir)/generate_algorithms.pl $(MODULES)
+	$(cxx_src_dir)/generate_algorithms.pl $@ $(MODULES)
 
 # C#
 
@@ -795,13 +834,16 @@ check_iso_8859_2: $(ISO_8859_2_algorithms:%=check_iso_8859_2_%)
 
 check_koi8r: $(KOI8_R_algorithms:%=check_koi8r_%)
 
+# Allows e.g. make RUN_STEMWORDS='valgrind ./stemwords' check
+RUN_STEMWORDS = ./stemwords
+
 check_utf8_%: $(STEMMING_DATA)/% stemwords$(EXEEXT)
 	@echo "Checking output of $* stemmer with UTF-8"
 	@if test -f '$</voc.txt.gz' ; then \
-	  gzip -dc '$</voc.txt.gz'|./stemwords$(EXEEXT) -c UTF_8 -l $* -o tmp.txt; \
+	  gzip -dc '$</voc.txt.gz'|$(RUN_STEMWORDS) -c UTF_8 -l $* -o tmp.txt; \
 	  gzip -dc '$</output.txt.gz'|$(DIFF) -u - tmp.txt; \
 	else \
-	  ./stemwords$(EXEEXT) -c UTF_8 -l $* -i $</voc.txt |\
+	  $(RUN_STEMWORDS) -c UTF_8 -l $* -i $</voc.txt |\
 	  $(TEE_TO_TMP_TXT) \
 	  $(DIFF) -u $</output.txt -; \
 	fi
@@ -811,25 +853,53 @@ check_utf8_%: $(STEMMING_DATA)/% stemwords$(EXEEXT)
 check_iso_8859_1_%: $(STEMMING_DATA)/% stemwords$(EXEEXT)
 	@echo "Checking output of $* stemmer with ISO_8859_1"
 	@$(ICONV) -f UTF-8 -t ISO-8859-1 '$</voc.txt' |\
-	    ./stemwords -c ISO_8859_1 -l $* |\
+	    $(RUN_STEMWORDS) -c ISO_8859_1 -l $* |\
 	    $(ICONV) -f ISO-8859-1 -t UTF-8 |\
 	    $(DIFF) -u '$</output.txt' -
 
 check_iso_8859_2_%: $(STEMMING_DATA)/% stemwords$(EXEEXT)
 	@echo "Checking output of $* stemmer with ISO_8859_2"
 	@$(ICONV) -f UTF-8 -t ISO-8859-2 '$</voc.txt' |\
-	    ./stemwords -c ISO_8859_2 -l $* |\
+	    $(RUN_STEMWORDS) -c ISO_8859_2 -l $* |\
 	    $(ICONV) -f ISO-8859-2 -t UTF-8 |\
 	    $(DIFF) -u '$</output.txt' -
 
 check_koi8r_%: $(STEMMING_DATA)/% stemwords$(EXEEXT)
 	@echo "Checking output of $* stemmer with KOI8R"
 	@$(ICONV) -f UTF-8 -t KOI8-R '$</voc.txt' |\
-	    ./stemwords -c KOI8_R -l $* |\
+	    $(RUN_STEMWORDS) -c KOI8_R -l $* |\
 	    $(ICONV) -f KOI8-R -t UTF-8 |\
 	    $(DIFF) -u '$</output.txt' -
 
 CLEANDIRS += $(c_src_dir)
+
+###############################################################################
+# C++
+###############################################################################
+
+.PHONY: cxx check_cxx do_check_cxx
+
+cxx: $(CXX_SOURCES) $(CXX_HEADERS) $(cxx_src_dir)/stemwords$(EXEEXT)
+
+check_cxx: cxx
+	$(MAKE) do_check_cxx
+
+do_check_cxx: $(libstemmer_algorithms:%=check_cxx_%)
+
+check_cxx_%: $(STEMMING_DATA_ABS)/%
+	@echo "Checking output of $* stemmer for C++"
+	@if test -f '$</voc.txt.gz' ; then \
+	  gzip -dc '$</voc.txt.gz' |\
+	    $(cxx_src_dir)/stemwords -l $* -o tmp.txt; \
+	  gzip -dc '$</output.txt.gz'|$(DIFF) -u - tmp.txt; \
+	else \
+	  $(cxx_src_dir)/stemwords -l $* -i $</voc.txt |\
+	      $(DIFF) -u $</output.txt - ;\
+	fi
+	@if test -f '$</voc.txt.gz' ; then rm tmp.txt ; fi
+
+CLEANFILES += $(CXX_SOURCES) $(CXX_HEADERS) cxx/*.o \
+	      $(cxx_src_dir)/stemmer.cxx $(cxx_src_dir)/stemwords$(EXEEXT)
 
 ###############################################################################
 # C#

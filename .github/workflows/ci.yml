@@ -45,6 +45,9 @@ jobs:
           # so enable `unsigned-integer-overflow` too.
           WERROR: '-std=c99 -pedantic -Werror -fsanitize=address,undefined,float-divide-by-zero,local-bounds,nullability,unsigned-integer-overflow -fsanitize-address-use-after-scope -fsanitize-recover=all -fno-omit-frame-pointer'
           CC: clang
+        - name: "C++"
+          CXX: g++
+          WERROR: '-pedantic -Werror'
         - name: java
           JAVA: java
           JAVAC: javac
@@ -125,6 +128,12 @@ jobs:
           MAKE: mingw32-make
           mingw64_packages: 'mingw-w64-ucrt-x86_64-go'
           ccache: sccache
+        - name: Windows MSVC (C)
+          os: windows-latest
+          c_tests: check
+          ccache: sccache
+          CC: cl
+          CFLAGS: -nologo -std:c11 -W3 -WX
 
       fail-fast: false
 
@@ -185,6 +194,11 @@ jobs:
             git clone "$UPSTREAM_REPO_URL"
           fi
         fi
+    - name: Set up Visual Studio shell
+      if: ${{ endsWith(matrix.CC, 'cl') }}
+      uses: egor-tensin/vs-shell@v2
+      with:
+        arch: x64
     - name: Hook up runtime testing
       if: ${{ inputs.runtime-tests }}
       run: |
@@ -226,7 +240,7 @@ jobs:
         msystem: ucrt64
         install: base-devel ${{ matrix.mingw64_packages }}
     - name: Build
-      run: $MAKE CC="${{ matrix.ccache || 'ccache' }} $CC"
+      run: $MAKE CC="${{ matrix.ccache || 'ccache' }} $CC" ${{ format('{0}{1}{2}', matrix.CFLAGS && 'CFLAGS="', matrix.CFLAGS, matrix.CFLAGS && '"') }}
     - name: Test C dist
       if: matrix.CFLAGS_DIST_BUILD
       run: |
@@ -241,7 +255,16 @@ jobs:
         rm -rf tmp
     - name: Test C
       if: matrix.c_tests
-      run: $MAKE ${{ matrix.c_tests }} check CC="$CC"
+      run: |
+        # Kludge so "generate" target doesn't need ada installed.
+        case '${{ matrix.c_tests }}' in
+          *generate*) mkdir ada/bin && ln -s /bin/true ada/bin/generate ;;
+        esac
+        $MAKE ${{ matrix.c_tests }} CC="$CC" ${{ format('{0}{1}{2}', matrix.CFLAGS && 'CFLAGS="', matrix.CFLAGS, matrix.CFLAGS && '"') }}
+    - name: Test C++
+      if: matrix.CXX
+      run: |
+        $MAKE check_cxx CXX='${{ matrix.CXX }}'
     - uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.PYTHON_VERSION }}
@@ -299,3 +322,33 @@ jobs:
         git status --porcelain=v1|grep -v '^?? \.s\?ccache/$'|grep '^' && { echo 'The generated files listed above are not in .gitignore' ; exit 1; }; true
         $MAKE clean ${{ case(inputs.runtime-tests == true, 'clean_runtime_tests', '') }}
         git status --porcelain=v1 --ignored|grep -v '^?? \.s\?ccache/$'|grep '^' && { echo 'The generated files listed above were not removed by `make clean`' ; exit 1; }; true
+
+  pypi-publish:
+    if: >
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      inputs.runtime-tests != true
+    needs:
+    - build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/snowballstemmer
+    permissions:
+      id-token: write
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+        show-progress: false
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.14'
+    - name: Install build module
+      run: pip install build
+    - name: Generate dist
+      run: make --output-sync --jobs=4 dist_libstemmer_python
+    - name: Publish to PyPI
+      if: success()
+      uses: pypa/gh-action-pypi-publish@release/v1

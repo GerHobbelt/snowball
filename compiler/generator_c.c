@@ -4,6 +4,9 @@
 #include <string.h> /* for strlen */
 #include "header.h"
 
+// C90 guarantees 31 significant initial characters in an internal identifier.
+#define C_MAX_ID_LEN 31
+
 /* Define this to get warning messages when optimisations can't be used. */
 /* #define OPTIMISATION_WARNINGS */
 
@@ -38,6 +41,19 @@ static void write_varname(struct generator * g, struct name * p) {
          */
         write_char(g, "sbirxg"[p->type]);
         write_char(g, '_');
+        if (g->options->target_lang == LANG_C) {
+            if (SIZE(p->s) > C_MAX_ID_LEN - 2) {
+                // We aim to generate C90 code, and C90 only guarantees 31
+                // significant initial characters in internal identifiers.
+                // C99 raised this to 63, and modern implementations are
+                // likely to have a high limit or not impose one, but it
+                // is easy to generate an identifier based on the number
+                // instead.  A Snowball name must start with a letter so
+                // this can't collide.
+                write_int(g, p->count);
+                return;
+            }
+        }
     }
     write_s(g, p->s);
 }
@@ -886,11 +902,6 @@ static void generate_hop(struct generator * g, struct node * p) {
     }
 }
 
-static void generate_delete(struct generator * g, struct node * p) {
-    write_comment(g, p);
-    write_propagating_error(g, "slice_del(z)", false, p);
-}
-
 static void generate_tolimit(struct generator * g, struct node * p) {
     write_comment(g, p);
     g->S[0] = p->mode == m_forward ? "" : "b";
@@ -938,6 +949,10 @@ static void generate_stringassign(struct generator * g, struct node * p) {
 
 static void generate_slicefrom(struct generator * g, struct node * p) {
     write_comment(g, p);
+    if (p->literalstring && SIZE(p->literalstring) == 0) {
+        write_propagating_error(g, "slice_del(z)", false, p);
+        return;
+    }
     write_propagating_error(g, "slice_from_~$(z, ~a)", false, p);
 }
 
@@ -1235,7 +1250,7 @@ static void generate_define(struct generator * g, struct node * p) {
     }
     writef(g, "int ~V(struct SN_env * z) {~N~+", p);
 
-    if (q->amongvar_needed) {
+    if (amongvar_needed(p->left)) {
         w(g, "~Mint among_var;~N");
     }
 
@@ -1517,7 +1532,6 @@ static void generate(struct generator * g, struct node * p) {
         case c_atleast:       generate_atleast(g, p); break;
         case c_tomark:        generate_tomark(g, p); break;
         case c_hop:           generate_hop(g, p); break;
-        case c_delete:        generate_delete(g, p); break;
         case c_next:          generate_next(g, p); break;
         case c_tolimit:       generate_tolimit(g, p); break;
         case c_leftslice:     generate_leftslice(g, p); break;
